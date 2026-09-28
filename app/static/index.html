@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f8f8f8">
+  <title>视频下载</title>
+  <link rel="icon" href="/assets/branding/app-icon.png">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <a class="skip-link" href="#main-content">跳到主要内容</a>
+
+  <header class="topbar" aria-label="主导航">
+    <a class="brand" href="/" aria-label="视频下载首页">
+      <span class="brand-dot" aria-hidden="true"></span>
+      <span>视频下载</span>
+    </a>
+    <button class="nav-btn" id="open-settings" type="button" aria-haspopup="dialog" aria-controls="settings-modal" aria-label="打开设置">
+      <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06-2.1 2.1-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V20.5h-3v-.1a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06-2.1-2.1.06-.06A1.65 1.65 0 0 0 7.05 15a1.65 1.65 0 0 0-1.51-1H5v-3h.1a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82L6.22 8l2.1-2.1.06.06A1.65 1.65 0 0 0 10.2 6.3 1.65 1.65 0 0 0 11.2 4.79V4.5h3v.1a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06L19.18 8l-.06.06a1.65 1.65 0 0 0-.33 1.82 1.65 1.65 0 0 0 1.51 1H20.5v3h-.1a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      设置
+    </button>
+  </header>
+
+  <div id="main-content" class="page-layout">
+    <section class="card" aria-labelledby="parse-heading">
+      <div class="card-header">
+        <h1 id="parse-heading" class="card-title">解析链接</h1>
+      </div>
+      <div class="card-body">
+        <form id="parse-form" novalidate>
+          <label class="field-label" for="url-input">视频链接</label>
+          <div class="input-row">
+            <input id="url-input" name="url" type="url" inputmode="url" autocomplete="url" placeholder="https://…" required aria-describedby="url-hint">
+            <button class="btn-primary" id="parse-btn" type="submit">解析</button>
+          </div>
+          <p id="url-hint" class="field-hint">支持 YouTube、哔哩哔哩、抖音及其他 yt-dlp 兼容站点。</p>
+          <p id="parse-status" class="status-line" role="status" aria-live="polite"></p>
+        </form>
+
+        <div id="result-area" hidden aria-live="polite" aria-label="解析结果">
+          <div class="media-preview">
+            <img id="thumb" class="thumb" alt="视频封面" width="108" height="61" loading="lazy" hidden>
+            <div class="media-info">
+              <h2 id="media-title">未命名视频</h2>
+              <p id="media-duration" class="media-meta"></p>
+            </div>
+          </div>
+          <div class="opts-block">
+            <fieldset id="fmt-fieldset">
+              <legend class="opts-label">格式</legend>
+              <div class="opts-row" id="fmt-opts"></div>
+            </fieldset>
+          </div>
+          <div class="opts-block">
+            <fieldset id="res-fieldset">
+              <legend class="opts-label">清晰度</legend>
+              <div class="opts-row" id="res-opts"></div>
+            </fieldset>
+          </div>
+          <div class="opts-block" id="sub-block" hidden>
+            <fieldset id="sub-fieldset">
+              <legend class="opts-label">字幕（可选）</legend>
+              <div class="opts-row" id="sub-opts"></div>
+            </fieldset>
+          </div>
+          <button class="btn-download" id="download-btn" type="button" disabled>
+            <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 3v12m0 0-4-4m4 4 4-4M5 19h14"/></svg>
+            保存到 NAS
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <section id="jobs-section" class="card" aria-labelledby="jobs-heading" hidden>
+      <div class="card-header">
+        <h2 id="jobs-heading" class="card-title">下载任务</h2>
+        <p class="card-sub">关闭此页面不会中断任务。</p>
+      </div>
+      <div id="jobs-list" aria-live="polite"></div>
+      <template id="job-tpl">
+        <div class="job-item">
+          <div class="job-head">
+            <h3 class="job-name"></h3>
+            <span class="badge"></span>
+          </div>
+          <p class="job-meta-line"></p>
+          <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div class="progress-fill"></div>
+          </div>
+          <p class="job-progress"></p>
+          <p class="job-error" hidden></p>
+          <div class="job-actions"></div>
+        </div>
+      </template>
+    </section>
+
+    <section class="card" aria-labelledby="history-heading">
+      <div class="card-header">
+        <h2 id="history-heading" class="card-title">下载历史</h2>
+        <button class="btn-text" id="clear-history" type="button" disabled>清空记录</button>
+      </div>
+      <p id="history-empty" class="empty-state">暂无下载记录。</p>
+      <ul id="history-list" class="history-list" aria-live="polite"></ul>
+    </section>
+  </div>
+
+  <div id="settings-modal" class="modal-backdrop" hidden>
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" aria-describedby="proxy-desc">
+      <div class="modal-header">
+        <h2 id="settings-title" class="card-title">设置</h2>
+        <button class="icon-btn" id="close-settings" type="button" aria-label="关闭设置">
+          <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 6 12 12M18 6 6 18"/></svg>
+        </button>
+      </div>
+      <section aria-labelledby="proxy-heading">
+        <h3 id="proxy-heading" class="section-heading">代理设置</h3>
+        <p id="proxy-desc" class="field-hint">代理地址中的密码会被隐藏显示。</p>
+        <p id="proxy-status" class="status-line" role="status" aria-live="polite">正在读取设置…</p>
+        <div class="modal-action-row">
+          <button class="btn-secondary" id="auto-detect-proxy" type="button">自动检测代理</button>
+        </div>
+        <form id="proxy-form">
+          <label class="field-label" for="proxy-input">手动代理地址</label>
+          <input id="proxy-input" type="url" inputmode="url" autocomplete="off" placeholder="http://127.0.0.1:7890">
+          <div class="modal-action-row modal-action-row--end">
+            <button class="btn-text" id="clear-proxy" type="button">清除</button>
+            <button class="btn-primary" type="submit">保存</button>
+          </div>
+        </form>
+      </section>
+      <section aria-labelledby="cookies-heading">
+        <h3 id="cookies-heading" class="section-heading">Cookies 导入</h3>
+        <p class="field-hint">仅导入你自己的 Netscape 格式 cookies.txt。</p>
+        <p id="cookies-status" class="status-line" role="status" aria-live="polite">正在读取 Cookies 状态…</p>
+        <label class="field-label" for="cookies-input">Cookies 文件</label>
+        <input id="cookies-input" type="file" accept=".txt,text/plain" aria-describedby="cookies-hint">
+        <p id="cookies-hint" class="field-hint">用于需要登录验证的视频。可重新导入或清除。</p>
+        <div class="modal-action-row modal-action-row--end">
+          <button class="btn-text" id="clear-cookies" type="button">清除 Cookies</button>
+          <button class="btn-primary" id="import-cookies" type="button">导入 Cookies</button>
+        </div>
+      </section>
+    </section>
+  </div>
+
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

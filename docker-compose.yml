@@ -1,0 +1,15 @@
+services:
+  video-downloader:
+    build: .
+    container_name: video-downloader
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - video_downloader_data:/data
+      - /vol1/1000/下载/视频下载:/downloads
+    environment:
+      - DATA_DIR=/data
+      - DOWNLOAD_DIR=/downloads
+
+volumes:
+  video_downloader_data:
