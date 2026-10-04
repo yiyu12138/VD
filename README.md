@@ -38,15 +38,15 @@
 
 > 需要飞牛 fnOS（x86），并先在 **应用中心** 安装 **Python 3.12**（python312）。fnOS 自带 FFmpeg。
 
-1. 到 [Releases](https://github.com/yiyu12138/VD/releases/latest) 下载 `vd_<版本>_x86.fpk`
+1. 到 [Releases](https://github.com/yiyu12138/VD/releases/latest) 下载 `video-downloader_<版本>_x86.fpk`
 2. 打开飞牛 **应用中心 → 右上角「手动安装」**，选择这个 fpk
 3. 按向导填写：
    - **访问端口**：默认 `8000`
    - **下载保存目录**：默认 `/vol1/1000/下载/视频下载`
    - **应用数据目录**：用来保存任务记录、设置和 Cookies，保持默认即可
-4. 装好后在飞牛桌面点 **VD 视频下载** 图标，或直接访问 `http://飞牛IP:8000`
+4. 装好后在飞牛桌面点 **视频下载** 图标，或直接访问 `http://飞牛IP:8000`
 
-之后想改端口或目录：**应用中心 → VD → 应用设置**，保存后服务会自动重启。
+之后想改端口或目录：**应用中心 → 视频下载 → 应用设置**，保存后服务会自动重启。
 
 ### 从旧版 Docker 迁移
 
@@ -95,7 +95,7 @@ cd /vol1/1000/docker/VD && sudo docker compose down
 
 <details><summary><b>日志在哪里</b></summary>
 
-`/var/apps/vd/var/app.log`
+`/var/apps/video-downloader/var/app.log`
 </details>
 
 ## 🛠 开发与构建
@@ -123,7 +123,7 @@ DATA_DIR=./data DOWNLOAD_DIR=./downloads uvicorn app.main:app --reload --port 80
 构建 fpk（需要在装了 python312 的飞牛设备上执行，依赖会随包打包，安装时不需要联网）：
 
 ```bash
-bash fpk/build.sh        # 产物：dist/vd_<版本>_x86.fpk
+bash fpk/build.sh        # 产物：dist/video-downloader_<版本>_x86.fpk
 ```
 
 ## ⚠️ 注意事项

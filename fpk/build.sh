@@ -6,7 +6,7 @@ set -eu
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${HERE}/.." && pwd)"
-APPNAME="vd"
+APPNAME="video-downloader"
 VERSION="$(sed -n "s/^__version__ *= *'\([^']*\)'.*/\1/p" "${ROOT}/app/__init__.py")"
 PY="${FNOS_PYTHON:-/var/apps/python312/target/bin/python3}"
 PIP_INDEX="${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}"

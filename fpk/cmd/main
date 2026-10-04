@@ -2,11 +2,11 @@
 # VD · 飞牛原生应用生命周期脚本（不使用 Docker）
 set -u
 
-PKG_VAR="${TRIM_PKGVAR:-/var/apps/vd/var}"
-APP_DIR="${TRIM_APPDEST:-/var/apps/vd/target}"
+PKG_VAR="${TRIM_PKGVAR:-/var/apps/video-downloader/var}"
+APP_DIR="${TRIM_APPDEST:-/var/apps/video-downloader/target}"
 PY="${FNOS_PYTHON:-/var/apps/python312/target/bin/python3}"
 PORT="${wizard_port:-8000}"
-DATA_DIR="${wizard_data_dir:-/var/apps/vd/var/data}"
+DATA_DIR="${wizard_data_dir:-/var/apps/video-downloader/var/data}"
 DL_DIR="${wizard_download_dir:-/vol1/1000/下载/视频下载}"
 PID_FILE="${PKG_VAR}/app.pid"
 LOG_FILE="${PKG_VAR}/app.log"

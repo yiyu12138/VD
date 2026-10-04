@@ -1,7 +1,7 @@
 {
     ".url": {
-        "vd.Application": {
-            "title": "VD 视频下载",
+        "video-downloader.Application": {
+            "title": "视频下载",
             "icon": "images/icon_{0}.png",
             "type": "url",
             "protocol": "http",

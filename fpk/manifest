@@ -1,6 +1,6 @@
-appname               = vd
+appname               = video-downloader
 version               = 2.0.0
-display_name          = VD 视频下载
+display_name          = 视频下载
 desc                  = 在局域网浏览器里粘贴链接，让 NAS 在后台下载视频、音频或封面。支持 YouTube、哔哩哔哩、抖音等 1800+ 站点，内置任务队列、媒体库、代理与 Cookies 管理。开源地址：https://github.com/yiyu12138/VD
 platform              = x86
 source                = thirdparty
@@ -9,7 +9,7 @@ maintainer_url        = https://github.com/yiyu12138
 distributor           = yiyu12138
 distributor_url       = https://github.com/yiyu12138
 desktop_uidir         = ui
-desktop_applaunchname = vd.Application
+desktop_applaunchname = video-downloader.Application
 install_dep_apps      = python312
 ctl_stop              = true
 checkport             = false
