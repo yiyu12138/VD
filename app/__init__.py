@@ -1,1 +1,1 @@
-# empty package marker
+__version__ = '2.0.0'

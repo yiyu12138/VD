@@ -1,149 +1,209 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#f8f8f8">
-  <title>视频下载</title>
-  <link rel="icon" href="/assets/branding/app-icon.png">
-  <link rel="stylesheet" href="/static/style.css">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#f5f5f7">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="VD">
+<title>VD · 视频下载</title>
+<link rel="icon" href="/static/icon-192.png">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="stylesheet" href="/static/style.css?v=dev">
 </head>
 <body>
-  <a class="skip-link" href="#main-content">跳到主要内容</a>
+<div class="bg" aria-hidden="true"></div>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 14a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1M14 10a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+  <symbol id="i-lib" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 9h18M8 4v5M16 4v5"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2V21a2 2 0 0 1-4 0v-.1A1.7 1.7 0 0 0 7 19.4a1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.7 1.7 0 0 0 1.2 14H1a2 2 0 0 1 0-4h.1A1.7 1.7 0 0 0 4.6 7a1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 10 1.2V1a2 2 0 0 1 4 0v.1a1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0 1.2 2.9H21a2 2 0 0 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></symbol>
+  <symbol id="i-dl" viewBox="0 0 24 24"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 20h14"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></symbol>
+  <symbol id="i-retry" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></symbol>
+</svg>
 
-  <header class="topbar" aria-label="主导航">
-    <a class="brand" href="/" aria-label="视频下载首页">
-      <span class="brand-dot" aria-hidden="true"></span>
-      <span>视频下载</span>
-    </a>
-    <button class="nav-btn" id="open-settings" type="button" aria-haspopup="dialog" aria-controls="settings-modal" aria-label="打开设置">
-      <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06-2.1 2.1-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V20.5h-3v-.1a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06-2.1-2.1.06-.06A1.65 1.65 0 0 0 7.05 15a1.65 1.65 0 0 0-1.51-1H5v-3h.1a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82L6.22 8l2.1-2.1.06.06A1.65 1.65 0 0 0 10.2 6.3 1.65 1.65 0 0 0 11.2 4.79V4.5h3v.1a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06L19.18 8l-.06.06a1.65 1.65 0 0 0-.33 1.82 1.65 1.65 0 0 0 1.51 1H20.5v3h-.1a1.65 1.65 0 0 0-1.51 1z"/></svg>
-      设置
-    </button>
-  </header>
+<div class="app">
+  <aside class="sidebar glass" aria-label="主导航">
+    <div class="brand"><div class="app-icon"><svg><use href="#i-dl"/></svg></div><b>VD</b></div>
+    <nav>
+      <a class="nav" href="#download" data-view="download"><svg><use href="#i-link"/></svg>解析下载</a>
+      <a class="nav" href="#tasks" data-view="tasks"><svg><use href="#i-clock"/></svg>任务队列<span class="count" data-count="active"></span></a>
+      <a class="nav" href="#library" data-view="library"><svg><use href="#i-lib"/></svg>媒体库<span class="count" data-count="library"></span></a>
+      <div class="nav-sec">偏好</div>
+      <a class="nav" href="#settings" data-view="settings"><svg><use href="#i-gear"/></svg>设置</a>
+    </nav>
+    <div class="disk">
+      <p>存储 · <span data-bind="dir">—</span></p>
+      <b data-bind="free">—</b> <span class="muted small" data-bind="total"></span>
+      <div class="track"><i data-bind="used-bar"></i></div>
+    </div>
+  </aside>
 
-  <div id="main-content" class="page-layout">
-    <section class="card" aria-labelledby="parse-heading">
-      <div class="card-header">
-        <h1 id="parse-heading" class="card-title">解析链接</h1>
-      </div>
-      <div class="card-body">
-        <form id="parse-form" novalidate>
-          <label class="field-label" for="url-input">视频链接</label>
-          <div class="input-row">
-            <input id="url-input" name="url" type="url" inputmode="url" autocomplete="url" placeholder="https://…" required aria-describedby="url-hint">
-            <button class="btn-primary" id="parse-btn" type="submit">解析</button>
+  <main>
+    <!-- 解析下载 -->
+    <section class="view" id="view-download">
+      <header class="hd">
+        <div><p class="muted" data-bind="today"></p><h1>解析下载</h1></div>
+        <span class="pill glass hide-m" data-bind="status-pill"><i></i><span>正在连接…</span></span>
+      </header>
+      <form class="parse glass" id="parse-form" autocomplete="off">
+        <svg class="lead"><use href="#i-link"/></svg>
+        <input id="url-input" type="url" inputmode="url" placeholder="粘贴视频链接，例如 https://www.bilibili.com/video/…" required aria-label="视频链接">
+        <button class="chip-btn" id="paste-btn" type="button">粘贴</button>
+        <button class="btn primary" id="parse-btn" type="submit">解析</button>
+      </form>
+      <div class="sites hide-m">支持<em>YouTube</em><em>Bilibili</em><em>抖音</em><em>X</em><em>Instagram</em><em>+1800 站点</em></div>
+
+      <div class="grid">
+        <section class="card glass" id="result-card">
+          <div class="empty" id="result-empty">
+            <svg><use href="#i-link"/></svg>
+            <h3>粘贴链接开始</h3>
+            <p class="muted">解析后可选择清晰度、音频或封面，任务在 NAS 后台执行，关掉页面也不会中断。</p>
           </div>
-          <p id="url-hint" class="field-hint">支持 YouTube、哔哩哔哩、抖音及其他 yt-dlp 兼容站点。</p>
-          <p id="parse-status" class="status-line" role="status" aria-live="polite"></p>
-        </form>
-
-        <div id="result-area" hidden aria-live="polite" aria-label="解析结果">
-          <div class="media-preview">
-            <img id="thumb" class="thumb" alt="视频封面" width="108" height="61" loading="lazy" hidden>
-            <div class="media-info">
-              <h2 id="media-title">未命名视频</h2>
-              <p id="media-duration" class="media-meta"></p>
+          <div class="skeleton" id="result-loading" hidden><div class="sk-th"></div><div class="sk-lines"><i></i><i></i><i></i></div></div>
+          <div id="result" hidden>
+            <div class="mv">
+              <div class="th"><img id="thumb" alt="" referrerpolicy="no-referrer"><span id="duration"></span></div>
+              <div class="mt"><h3 id="media-title"></h3><p id="media-meta" class="muted"></p></div>
+            </div>
+            <div class="lbl">类型</div>
+            <div class="seg" id="kind-seg" role="radiogroup">
+              <button type="button" data-kind="video" class="on">视频</button>
+              <button type="button" data-kind="audio">仅音频</button>
+              <button type="button" data-kind="cover">封面</button>
+            </div>
+            <div id="video-opts">
+              <div class="lbl">清晰度</div><div class="chips" id="res-opts"></div>
+              <div class="lbl">格式</div><div class="chips" id="fmt-opts"></div>
+            </div>
+            <div id="audio-opts" hidden><div class="lbl">格式</div><div class="chips" id="afmt-opts"></div></div>
+            <div id="sub-wrap" hidden><div class="lbl">字幕 <span class="muted small">可多选</span></div><div class="chips" id="sub-opts"></div></div>
+            <div class="foot">
+              <p class="muted small" id="save-hint"></p>
+              <button class="btn primary" id="download-btn" type="button"><svg><use href="#i-dl"/></svg>保存到 NAS</button>
             </div>
           </div>
-          <div class="opts-block">
-            <fieldset id="fmt-fieldset">
-              <legend class="opts-label">格式</legend>
-              <div class="opts-row" id="fmt-opts"></div>
-            </fieldset>
-          </div>
-          <div class="opts-block">
-            <fieldset id="res-fieldset">
-              <legend class="opts-label">清晰度</legend>
-              <div class="opts-row" id="res-opts"></div>
-            </fieldset>
-          </div>
-          <div class="opts-block" id="sub-block" hidden>
-            <fieldset id="sub-fieldset">
-              <legend class="opts-label">字幕（可选）</legend>
-              <div class="opts-row" id="sub-opts"></div>
-            </fieldset>
-          </div>
-          <button class="btn-download" id="download-btn" type="button" disabled>
-            <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 3v12m0 0-4-4m4 4 4-4M5 19h14"/></svg>
-            保存到 NAS
-          </button>
-        </div>
+        </section>
+
+        <section class="card glass">
+          <h2>任务 <a href="#tasks" class="link">查看全部</a></h2>
+          <div id="recent-jobs"></div>
+        </section>
       </div>
     </section>
 
-    <section id="jobs-section" class="card" aria-labelledby="jobs-heading" hidden>
-      <div class="card-header">
-        <h2 id="jobs-heading" class="card-title">下载任务</h2>
-        <p class="card-sub">关闭此页面不会中断任务。</p>
-      </div>
-      <div id="jobs-list" aria-live="polite"></div>
-      <template id="job-tpl">
-        <div class="job-item">
-          <div class="job-head">
-            <h3 class="job-name"></h3>
-            <span class="badge"></span>
-          </div>
-          <p class="job-meta-line"></p>
-          <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-            <div class="progress-fill"></div>
-          </div>
-          <p class="job-progress"></p>
-          <p class="job-error" hidden></p>
-          <div class="job-actions"></div>
+    <!-- 任务 -->
+    <section class="view" id="view-tasks" hidden>
+      <header class="hd">
+        <div><p class="muted">后台下载，关闭页面不会中断</p><h1>任务队列</h1></div>
+        <div class="actions">
+          <button class="btn ghost" id="pause-all">全部暂停</button>
+          <button class="btn ghost" id="resume-all">全部继续</button>
+          <button class="btn ghost" id="clear-done">清除已完成</button>
         </div>
-      </template>
+      </header>
+      <div class="seg filter" id="job-filter">
+        <button class="on" data-f="all">全部</button><button data-f="active">进行中</button><button data-f="done">已完成</button><button data-f="failed">需处理</button>
+      </div>
+      <section class="card glass"><div id="all-jobs"></div></section>
     </section>
 
-    <section class="card" aria-labelledby="history-heading">
-      <div class="card-header">
-        <h2 id="history-heading" class="card-title">下载历史</h2>
-        <button class="btn-text" id="clear-history" type="button" disabled>清空记录</button>
-      </div>
-      <p id="history-empty" class="empty-state">暂无下载记录。</p>
-      <ul id="history-list" class="history-list" aria-live="polite"></ul>
+    <!-- 媒体库 -->
+    <section class="view" id="view-library" hidden>
+      <header class="hd">
+        <div><p class="muted" data-bind="lib-summary">—</p><h1>媒体库</h1></div>
+        <label class="search glass"><svg><use href="#i-search"/></svg><input id="lib-search" placeholder="搜索文件名" aria-label="搜索媒体库"></label>
+      </header>
+      <div class="lib-grid" id="lib-grid"></div>
     </section>
+
+    <!-- 设置 -->
+    <section class="view" id="view-settings" hidden>
+      <header class="hd"><div><p class="muted">代理、登录凭据与下载偏好</p><h1>设置</h1></div></header>
+      <div class="settings">
+        <section class="card glass">
+          <h2>网络代理</h2>
+          <p class="muted small">YouTube、X 等站点需要代理。哔哩哔哩和抖音在代理失败时会自动改用直连。</p>
+          <form class="field" id="proxy-form">
+            <input id="proxy-input" placeholder="http://127.0.0.1:7890" aria-label="代理地址">
+            <button class="btn primary" type="submit">保存</button>
+          </form>
+          <div class="row-btns">
+            <button class="btn ghost" id="proxy-detect">自动检测</button>
+            <button class="btn ghost" id="proxy-test">测试连接</button>
+            <button class="btn ghost danger" id="proxy-clear">清除</button>
+            <span class="muted small" id="proxy-msg"></span>
+          </div>
+        </section>
+        <section class="card glass">
+          <h2>Cookies</h2>
+          <p class="muted small">需要登录的内容（会员、年龄限制、抖音等）请导入 Netscape 格式的 cookies.txt。多次导入会自动合并。</p>
+          <div class="cookie-sites" id="cookie-sites"></div>
+          <div class="row-btns">
+            <label class="btn primary file-btn">导入 cookies.txt<input type="file" id="cookie-file" accept=".txt,text/plain" hidden></label>
+            <button class="btn ghost danger" id="cookie-clear">全部清除</button>
+          </div>
+        </section>
+        <section class="card glass">
+          <h2>下载</h2>
+          <div class="list">
+            <div class="li"><span>同时下载数</span>
+              <div class="stepper"><button data-step="-1" aria-label="减少">−</button><b id="conc">2</b><button data-step="1" aria-label="增加">+</button></div></div>
+            <div class="li"><span>按站点分文件夹<small class="muted">如 Bilibili/视频标题/</small></span>
+              <label class="switch"><input type="checkbox" id="site-folders"><i></i></label></div>
+            <div class="li"><span>保存目录</span><span class="muted mono" data-bind="dir-full">—</span></div>
+          </div>
+        </section>
+        <section class="card glass">
+          <h2>关于</h2>
+          <div class="list">
+            <div class="li"><span>VD</span><span class="muted" data-bind="ver">—</span></div>
+            <div class="li"><span>解析器 yt-dlp</span><span><span class="muted" data-bind="ytdlp">—</span> <button class="link" id="update-ytdlp">检查更新</button></span></div>
+            <div class="li"><span>FFmpeg</span><span class="muted" data-bind="ffmpeg">—</span></div>
+            <div class="li"><span>Python</span><span class="muted" data-bind="py">—</span></div>
+            <div class="li"><span>源代码</span><a class="link" href="https://github.com/yiyu12138/VD" target="_blank" rel="noopener">GitHub</a></div>
+          </div>
+        </section>
+      </div>
+    </section>
+  </main>
+</div>
+
+<nav class="tabbar glass" aria-label="底部导航">
+  <a href="#download" data-view="download"><svg><use href="#i-link"/></svg>下载</a>
+  <a href="#tasks" data-view="tasks"><svg><use href="#i-clock"/></svg>任务<span class="badge-dot" data-count="active"></span></a>
+  <a href="#library" data-view="library"><svg><use href="#i-lib"/></svg>媒体库</a>
+  <a href="#settings" data-view="settings"><svg><use href="#i-gear"/></svg>设置</a>
+</nav>
+
+<dialog id="viewer" class="glass">
+  <button class="icon-btn close" data-close aria-label="关闭"><svg><use href="#i-x"/></svg></button>
+  <div id="viewer-body"></div>
+</dialog>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<template id="job-tpl">
+  <div class="job">
+    <div class="mini"><img alt="" referrerpolicy="no-referrer" loading="lazy"></div>
+    <div class="jb">
+      <b class="j-title"></b>
+      <p><span class="j-left"></span><span class="j-right"></span></p>
+      <div class="track"><i></i></div>
+      <p class="j-err"></p>
+    </div>
+    <span class="st"></span>
+    <div class="j-acts"></div>
   </div>
+</template>
 
-  <div id="settings-modal" class="modal-backdrop" hidden>
-    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" aria-describedby="proxy-desc">
-      <div class="modal-header">
-        <h2 id="settings-title" class="card-title">设置</h2>
-        <button class="icon-btn" id="close-settings" type="button" aria-label="关闭设置">
-          <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 6 12 12M18 6 6 18"/></svg>
-        </button>
-      </div>
-      <section aria-labelledby="proxy-heading">
-        <h3 id="proxy-heading" class="section-heading">代理设置</h3>
-        <p id="proxy-desc" class="field-hint">代理地址中的密码会被隐藏显示。</p>
-        <p id="proxy-status" class="status-line" role="status" aria-live="polite">正在读取设置…</p>
-        <div class="modal-action-row">
-          <button class="btn-secondary" id="auto-detect-proxy" type="button">自动检测代理</button>
-        </div>
-        <form id="proxy-form">
-          <label class="field-label" for="proxy-input">手动代理地址</label>
-          <input id="proxy-input" type="url" inputmode="url" autocomplete="off" placeholder="http://127.0.0.1:7890">
-          <div class="modal-action-row modal-action-row--end">
-            <button class="btn-text" id="clear-proxy" type="button">清除</button>
-            <button class="btn-primary" type="submit">保存</button>
-          </div>
-        </form>
-      </section>
-      <section aria-labelledby="cookies-heading">
-        <h3 id="cookies-heading" class="section-heading">Cookies 导入</h3>
-        <p class="field-hint">仅导入你自己的 Netscape 格式 cookies.txt。</p>
-        <p id="cookies-status" class="status-line" role="status" aria-live="polite">正在读取 Cookies 状态…</p>
-        <label class="field-label" for="cookies-input">Cookies 文件</label>
-        <input id="cookies-input" type="file" accept=".txt,text/plain" aria-describedby="cookies-hint">
-        <p id="cookies-hint" class="field-hint">用于需要登录验证的视频。可重新导入或清除。</p>
-        <div class="modal-action-row modal-action-row--end">
-          <button class="btn-text" id="clear-cookies" type="button">清除 Cookies</button>
-          <button class="btn-primary" id="import-cookies" type="button">导入 Cookies</button>
-        </div>
-      </section>
-    </section>
-  </div>
-
-  <script src="/static/app.js" defer></script>
+<script src="/static/app.js?v=dev" defer></script>
 </body>
 </html>

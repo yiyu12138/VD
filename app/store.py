@@ -30,6 +30,8 @@ class Store:
                 'created_at TEXT NOT NULL, updated_at TEXT NOT NULL)'
             )
             columns = {row[1] for row in connection.execute('PRAGMA table_info(jobs)')}
+            if 'site' not in columns:
+                connection.execute("ALTER TABLE jobs ADD COLUMN site TEXT NOT NULL DEFAULT ''")
             if 'cancel_requested' not in columns:
                 connection.execute(
                     'ALTER TABLE jobs ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0'
@@ -117,7 +119,7 @@ class Store:
     def update_job(self, job_id: str, values: dict) -> None:
         allowed = {
             'title', 'thumbnail', 'status', 'downloaded', 'total', 'speed',
-            'temporary_dir', 'saved_path', 'error', 'subtitles', 'cancel_requested',
+            'temporary_dir', 'saved_path', 'error', 'subtitles', 'cancel_requested', 'site',
         }
         values = {key: value for key, value in values.items() if key in allowed}
         if not values:
@@ -139,7 +141,7 @@ class Store:
         fields = (
             'id', 'url', 'title', 'thumbnail', 'container', 'height', 'subtitles',
             'status', 'downloaded', 'total', 'speed', 'temporary_dir', 'saved_path',
-            'error', 'cancel_requested', 'created_at', 'updated_at',
+            'error', 'cancel_requested', 'created_at', 'updated_at', 'site',
         )
         item = dict(zip(fields, row))
         item['subtitles'] = json.loads(item['subtitles'])
@@ -150,19 +152,47 @@ class Store:
         with self._connect() as connection:
             row = connection.execute(
                 'SELECT id, url, title, thumbnail, container, height, subtitles, status, '
-                'downloaded, total, speed, temporary_dir, saved_path, error, cancel_requested, created_at, updated_at '
+                'downloaded, total, speed, temporary_dir, saved_path, error, cancel_requested, created_at, updated_at, site '
                 'FROM jobs WHERE id = ?', (job_id,),
             ).fetchone()
         return self._job(row) if row else None
 
-    def list_jobs(self) -> list[dict]:
+    def list_jobs(self, status: str | None = None, limit: int = 100) -> list[dict]:
+        where = 'WHERE status = ? ' if status else ''
+        params = ((status,) if status else ()) + (limit,)
         with self._connect() as connection:
             rows = connection.execute(
                 'SELECT id, url, title, thumbnail, container, height, subtitles, status, '
-                'downloaded, total, speed, temporary_dir, saved_path, error, cancel_requested, created_at, updated_at '
-                'FROM jobs ORDER BY updated_at DESC LIMIT 30'
+                'downloaded, total, speed, temporary_dir, saved_path, error, cancel_requested, created_at, updated_at, site '
+                f'FROM jobs {where}ORDER BY created_at DESC LIMIT ?', params
             ).fetchall()
         return [self._job(row) for row in rows]
+
+    def clear_jobs(self, statuses: tuple[str, ...]) -> int:
+        marks = ','.join('?' * len(statuses))
+        with self._connect() as connection:
+            return connection.execute(f'DELETE FROM jobs WHERE status IN ({marks})', statuses).rowcount
+
+    def get_setting(self, key: str) -> str | None:
+        with self._connect() as connection:
+            row = connection.execute('SELECT value FROM settings WHERE key = ?', (key,)).fetchone()
+        return row[0] if row else None
+
+    def set_setting(self, key: str, value: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                'INSERT INTO settings(key, value) VALUES (?, ?) '
+                'ON CONFLICT(key) DO UPDATE SET value = excluded.value', (key, value))
+
+    def get_int(self, key: str, default: int) -> int:
+        try:
+            return int(self.get_setting(key) or default)
+        except ValueError:
+            return default
+
+    def get_bool(self, key: str, default: bool) -> bool:
+        value = self.get_setting(key)
+        return default if value is None else value == '1'
 
     def delete_job(self, job_id: str) -> None:
         with self._connect() as connection:
@@ -178,6 +208,6 @@ class Store:
             )
             connection.execute(
                 "UPDATE jobs SET status = '可继续', error = '服务重启，可继续下载', "
-                "updated_at = ? WHERE status IN ('准备中', '下载中', '合并中')",
+                "updated_at = ? WHERE status IN ('准备中', '下载中', '合并中', '暂停中')",
                 (now,),
             )

@@ -15,6 +15,10 @@ DIRECT_FALLBACK_DOMAINS: frozenset[str] = frozenset({
 
 QUALITY_KEYS: tuple[str, ...] = ('tbr', 'vbr', 'abr', 'filesize', 'filesize_approx')
 
+class StopDownload(Exception):
+    """用户主动取消/暂停，不应触发直连重试。"""
+
+
 _proxy_cache: dict[str, tuple[bool, float]] = {}
 _PROXY_CACHE_TTL = 30.0
 
@@ -130,6 +134,10 @@ def parse_media(url: str, proxy: str | None) -> dict:
     })
     return {
         'title': info.get('title') or '未命名视频',
+        'site': info.get('extractor_key') or info.get('extractor') or '',
+        'uploader': info.get('uploader') or info.get('channel') or '',
+        'view_count': info.get('view_count'),
+        'upload_date': info.get('upload_date') or '',
         'thumbnail': info.get('thumbnail') or '',
         'duration': info.get('duration'),
         'formats': formats,
@@ -144,7 +152,7 @@ def select_format(formats: list[dict], container: str, height: int | None) -> st
     def compatible(item: dict) -> bool:
         return container == 'mkv' or item.get('ext') == container
 
-    if container == 'mp3':
+    if container in {'mp3', 'm4a'}:
         audio = (
             [item for item in formats if item.get('has_audio') and not item.get('has_video')]
             or [item for item in formats if item.get('has_audio')]
@@ -195,6 +203,7 @@ def download_media(
 ) -> Path:
     url = normalize_url(url)
     target.mkdir(parents=True, exist_ok=True)
+    audio_only = container in {'mp3', 'm4a'}
 
     def download_once(active_proxy: str | None) -> None:
         options = {
@@ -207,8 +216,8 @@ def download_media(
         if active_proxy:
             options['proxy'] = active_proxy
         postprocessors = [{
-            'key': 'FFmpegExtractAudio' if container == 'mp3' else 'FFmpegVideoRemuxer',
-            **({'preferredcodec': 'mp3'} if container == 'mp3' else {'preferedformat': container}),
+            'key': 'FFmpegExtractAudio' if audio_only else 'FFmpegVideoRemuxer',
+            **({'preferredcodec': container} if audio_only else {'preferedformat': container}),
         }]
         if subtitles:
             options.update({
@@ -234,8 +243,10 @@ def download_media(
 
     try:
         download_once(proxy)
-    except Exception:
-        if not needs_direct_fallback(url, proxy):
+    except StopDownload:
+        raise
+    except Exception as error:
+        if isinstance(error.__context__, StopDownload) or not needs_direct_fallback(url, proxy):
             raise
         download_once(None)
 
@@ -246,7 +257,7 @@ def download_media(
     if not outputs:
         raise RuntimeError('下载未生成目标文件')
     outputs.sort(key=lambda item: item.stat().st_mtime, reverse=True)
-    if container == 'mp3':
+    if audio_only:
         return outputs[0]
     output = next((item for item in outputs if has_audio_track(item)), None)
     if not output:
@@ -266,9 +277,9 @@ def proxy_candidates() -> list[str]:
     ]
 
 
-def proxy_works(proxy: str) -> bool:
+def proxy_works(proxy: str, use_cache: bool = True) -> bool:
     now = time.monotonic()
-    if proxy in _proxy_cache:
+    if use_cache and proxy in _proxy_cache:
         result, expires_at = _proxy_cache[proxy]
         if now < expires_at:
             return result
@@ -290,3 +301,26 @@ def proxy_works(proxy: str) -> bool:
 
     _proxy_cache[proxy] = (result, now + _PROXY_CACHE_TTL)
     return result
+
+
+def download_cover(url: str, proxy: str | None, target: Path, name: str = 'cover') -> Path:
+    """下载封面并统一转成 JPG。"""
+    if not url:
+        raise ValueError('该视频没有封面')
+    target.mkdir(parents=True, exist_ok=True)
+    options = {'quiet': True, 'no_warnings': True, 'socket_timeout': 15}
+    if proxy:
+        options['proxy'] = proxy
+    raw = target / f'{name}.src'
+    with yt_dlp.YoutubeDL(options) as downloader:
+        raw.write_bytes(downloader.urlopen(Request(url)).read())
+    output = target / f'{name}.jpg'
+    result = subprocess.run(
+        ['ffmpeg', '-y', '-loglevel', 'error', '-i', str(raw), '-frames:v', '1', '-q:v', '2', str(output)],
+        capture_output=True, check=False,
+    )
+    if result.returncode != 0 or not output.exists():
+        raw.replace(output)
+    else:
+        raw.unlink(missing_ok=True)
+    return output

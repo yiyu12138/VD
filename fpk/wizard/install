@@ -1,0 +1,14 @@
+[
+  {
+    "stepTitle": "访问与存储",
+    "items": [
+      { "type": "tips", "helpText": "VD 以飞牛原生服务运行（依赖 Python 3.12 运行时，不使用 Docker）。下面的下载目录就是视频实际保存位置。" },
+      { "type": "text", "field": "wizard_port", "label": "访问端口", "initValue": "8000",
+        "rules": [ { "required": true, "message": "请输入访问端口" }, { "pattern": "^[0-9]+$", "message": "端口只能填写数字" } ] },
+      { "type": "text", "field": "wizard_download_dir", "label": "下载保存目录（绝对路径）", "initValue": "/vol1/1000/下载/视频下载",
+        "rules": [ { "required": true, "message": "请输入下载目录" }, { "pattern": "^/", "message": "请填写绝对路径" } ] },
+      { "type": "text", "field": "wizard_data_dir", "label": "应用数据目录（任务、设置、Cookies）", "initValue": "/var/apps/vd/var/data",
+        "rules": [ { "required": true, "message": "请输入应用数据目录" }, { "pattern": "^/", "message": "请填写绝对路径" } ] }
+    ]
+  }
+]

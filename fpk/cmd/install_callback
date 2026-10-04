@@ -1,0 +1,6 @@
+#!/bin/bash
+set -u
+DATA_DIR="${wizard_data_dir:-/var/apps/vd/var/data}"
+DL_DIR="${wizard_download_dir:-/vol1/1000/下载/视频下载}"
+mkdir -p "${DATA_DIR}" "${DL_DIR}" "${TRIM_PKGVAR:-/var/apps/vd/var}" 2>/dev/null || true
+exit 0

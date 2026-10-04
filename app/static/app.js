@@ -1,462 +1,436 @@
-(() => {
-  'use strict';
+'use strict';
+const $ = (s, el = document) => el.querySelector(s);
+const $$ = (s, el = document) => [...el.querySelectorAll(s)];
+const api = async (path, opts = {}) => {
+  const init = { ...opts, headers: { ...(opts.headers || {}) } };
+  if (opts.json !== undefined) {
+    init.body = JSON.stringify(opts.json);
+    init.headers['Content-Type'] = 'application/json';
+    delete init.json;
+  }
+  const res = await fetch('/api/' + path, init);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || `请求失败（${res.status}）`);
+  return data;
+};
 
-  const VIDEO_CONTAINERS = ['mp4', 'mkv', 'webm'];
-  const POLL_ACTIVE_MS = 1000;
-  const POLL_IDLE_MS = 10000;
-  const ACTIVE_STATUSES = new Set(['准备中', '下载中', '合并中', '取消中']);
+const fmtBytes = (n) => {
+  if (!n) return '';
+  const u = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return `${n >= 100 || i === 0 ? n.toFixed(0) : n.toFixed(1)} ${u[i]}`;
+};
+const fmtShort = (n) => fmtBytes(n).replace(' ', '').replace('B', '');
+const fmtDur = (s) => {
+  if (!s) return '';
+  s = Math.round(s);
+  const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = s % 60;
+  return (h ? `${h}:${String(m).padStart(2, '0')}` : m) + ':' + String(x).padStart(2, '0');
+};
+const fmtCount = (n) => !n ? '' : n >= 1e8 ? (n / 1e8).toFixed(1) + ' 亿' : n >= 1e4 ? (n / 1e4).toFixed(1) + ' 万' : String(n);
+const fmtTime = (iso) => {
+  const d = new Date(typeof iso === 'number' ? iso * 1000 : iso);
+  const now = new Date();
+  const hm = d.toTimeString().slice(0, 5);
+  if (d.toDateString() === now.toDateString()) return '今天 ' + hm;
+  const y = new Date(now); y.setDate(now.getDate() - 1);
+  if (d.toDateString() === y.toDateString()) return '昨天 ' + hm;
+  return `${d.getMonth() + 1}月${d.getDate()}日`;
+};
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-  const state = {
-    parsed: null, container: null, height: null,
-    subtitles: [], previousFocus: null, pollTimer: null,
-  };
+let toastTimer;
+function toast(msg, err = false) {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.className = 'toast show' + (err ? ' err' : '');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.className = 'toast', 2600);
+}
+async function busy(btn, fn) {
+  btn.classList.add('loading'); btn.disabled = true;
+  try { return await fn(); } catch (e) { toast(e.message, true); } finally { btn.classList.remove('loading'); btn.disabled = false; }
+}
+const bind = (key, val) => $$(`[data-bind="${key}"]`).forEach((el) => el.textContent = val);
 
-  const $ = (id) => document.getElementById(id);
+/* ---------------- 路由 ---------------- */
+const views = ['download', 'tasks', 'library', 'settings'];
+function route() {
+  const v = views.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'download';
+  views.forEach((x) => $('#view-' + x).hidden = x !== v);
+  $$('[data-view]').forEach((a) => a.classList.toggle('on', a.dataset.view === v));
+  if (v === 'library') loadLibrary();
+  if (v === 'settings') loadSettings();
+  window.scrollTo({ top: 0 });
+}
+window.addEventListener('hashchange', route);
 
-  const setStatus = (el, message = '', kind = '') => {
-    el.textContent = message;
-    el.dataset.kind = kind;
-  };
+/* ---------------- 系统信息 ---------------- */
+let sys = {};
+async function loadSystem() {
+  try { sys = await api('系统'); } catch { return; }
+  const s = sys['存储'] || {};
+  bind('dir', sys['下载目录'].split('/').filter(Boolean).slice(-2).join('/'));
+  bind('dir-full', sys['下载目录']);
+  bind('free', fmtBytes(s['可用']) || '—');
+  bind('total', s['总量'] ? `可用 / ${fmtBytes(s['总量'])}` : '');
+  $$('[data-bind="used-bar"]').forEach((i) => i.style.width = s['总量'] ? (s['已用'] / s['总量'] * 100).toFixed(1) + '%' : 0);
+  bind('ver', 'v' + sys['版本']); bind('ytdlp', sys.yt_dlp); bind('ffmpeg', sys.ffmpeg); bind('py', sys.python);
+  const pill = $('[data-bind="status-pill"]');
+  pill.className = 'pill glass hide-m ' + (sys['代理'] ? 'ok' : 'warn');
+  pill.querySelector('span').textContent = `${sys['代理'] ? '代理已设置' : '未设置代理'} · yt-dlp ${sys.yt_dlp}`;
+  $('#conc').textContent = sys['并发'];
+  $('#site-folders').checked = sys['按站点分类'];
+  updateSaveHint();
+}
 
-  const formatsFor = (p) => Array.isArray(p?.formats) ? p.formats : [];
-  const audioFormats = (p) => formatsFor(p).filter((f) => f.has_audio);
-  const videoFormats = (p, container = null) => formatsFor(p).filter((f) =>
-    f.has_video && Number.isFinite(f.height) &&
-    (!container || container === 'mkv' || f.ext === container));
+/* ---------------- 解析 ---------------- */
+const state = { media: null, url: '', kind: 'video', height: null, container: 'mp4', audio: 'mp3', subs: new Set() };
 
-  const downloadableVideos = (p, container) => {
-    const audio = audioFormats(p).filter((f) => !f.has_video);
-    const hasCompatibleAudio = audio.some((f) =>
-      container === 'mkv' ||
-      (container === 'mp4' ? ['m4a', 'mp4'].includes(f.ext) : f.ext === container));
-    return videoFormats(p, container).filter((f) => f.has_audio || hasCompatibleAudio);
-  };
+$('#paste-btn').addEventListener('click', async () => {
+  try {
+    const text = (await navigator.clipboard.readText()).trim();
+    const m = text.match(/https?:\/\/\S+/);
+    if (!m) return toast('剪贴板里没有链接', true);
+    $('#url-input').value = m[0];
+    $('#parse-form').requestSubmit();
+  } catch { toast('无法读取剪贴板，请手动粘贴', true); }
+});
+$('#url-input').addEventListener('paste', (e) => {
+  const text = e.clipboardData.getData('text');
+  const m = text.match(/https?:\/\/\S+/);
+  if (m && m[0] !== text.trim()) { e.preventDefault(); $('#url-input').value = m[0]; }
+});
 
-  const containersFor = (p) => {
-    const out = VIDEO_CONTAINERS.filter((c) => downloadableVideos(p, c).length > 0);
-    if (audioFormats(p).length) out.push('mp3');
-    return out;
-  };
-
-  const heightsFor = (p, container) =>
-    [...new Set(downloadableVideos(p, container).map((f) => f.height))].sort((a, b) => b - a);
-
-  const allHeightsFor = (p) =>
-    [...new Set(VIDEO_CONTAINERS.flatMap((c) => heightsFor(p, c)))].sort((a, b) => b - a);
-
-  window.buildDownloadPayload = (p, container, height, subtitles = state.subtitles) => {
-    if (!p?.url || !containersFor(p).includes(container)) return null;
-    if (container === 'mp3')
-      return audioFormats(p).length ? { url: p.url, container, height: null, subtitles } : null;
-    return downloadableVideos(p, container).some((f) => f.height === height)
-      ? { url: p.url, container, height, subtitles } : null;
-  };
-
-  window.matchHistoryChoice = (p, item) => {
-    const container = String(item?.container || '').toLowerCase();
-    if (!containersFor(p).includes(container)) return null;
-    if (container === 'mp3') return { container, height: null };
-    return heightsFor(p, container).includes(item?.height)
-      ? { container, height: item.height } : null;
-  };
-
-  const request = async (url, options) => {
-    const res = await fetch(url, options);
-    if (!res.ok) {
-      let msg = '请求失败，请稍后再试';
-      try { msg = (await res.json()).detail || msg; } catch (_) { /* default */ }
-      throw new Error(msg);
-    }
-    return res;
-  };
-
-  const scheduleNextPoll = (hasActive) => {
-    clearTimeout(state.pollTimer);
-    state.pollTimer = setTimeout(pollJobs, hasActive ? POLL_ACTIVE_MS : POLL_IDLE_MS);
-  };
-
-  const pollJobs = async () => {
+$('#parse-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const raw = $('#url-input').value.trim();
+  const url = (raw.match(/https?:\/\/\S+/) || [raw])[0];
+  $('#url-input').value = url;
+  $('#result-empty').hidden = true; $('#result').hidden = true; $('#result-loading').hidden = false;
+  await busy($('#parse-btn'), async () => {
     try {
-      const jobs = await (await request('/api/下载/任务')).json();
-      const active = jobs.filter((j) => ACTIVE_STATUSES.has(j.status));
-      $('jobs-section').hidden = active.length === 0;
-      $('jobs-list').replaceChildren(...active.map(jobItem));
-      if (jobs.some((j) => j.status === '已完成')) await loadHistory();
-      scheduleNextPoll(active.length > 0);
-    } catch (_) {
-      setStatus($('parse-status'), '无法读取下载任务。', 'error');
-      scheduleNextPoll(false);
-    }
-  };
-
-  const startPolling = () => {
-    clearTimeout(state.pollTimer);
-    pollJobs();
-  };
-
-  const durationText = (seconds) => {
-    if (!Number.isFinite(seconds)) return '';
-    const total = Math.max(0, Math.round(seconds));
-    const h = Math.floor(total / 3600);
-    const m = Math.floor((total % 3600) / 60);
-    const s = total % 60;
-    return `时长：${h ? `${h}:` : ''}${String(m).padStart(h ? 2 : 1, '0')}:${String(s).padStart(2, '0')}`;
-  };
-
-  const chip = (label, pressed, onClick) => {
-    const btn = document.createElement('button');
-    btn.className = 'opt-chip';
-    btn.type = 'button';
-    btn.textContent = label;
-    btn.setAttribute('aria-pressed', String(pressed));
-    btn.addEventListener('click', onClick);
-    return btn;
-  };
-
-  const renderOptions = () => {
-    const p = state.parsed;
-    const containers = containersFor(p);
-    if (!containers.includes(state.container)) state.container = containers[0] ?? null;
-    const heights = allHeightsFor(p);
-    if (state.container === 'mp3') state.height = null;
-    else if (!heights.includes(state.height)) state.height = heights[0] ?? null;
-
-    $('fmt-opts').replaceChildren(...containers.map((c) =>
-      chip(c.toUpperCase(), state.container === c, () => { state.container = c; renderOptions(); })));
-
-    $('res-opts').replaceChildren(...(state.container === 'mp3'
-      ? [chip('仅音频', true, () => {})]
-      : heights.map((h) => chip(`${h}P`, state.height === h, () => {
-          state.height = h;
-          if (!heightsFor(p, state.container).includes(h)) {
-            state.container = containers.find((c) => heightsFor(p, c).includes(h));
-            setStatus($('parse-status'), `已切换为 ${state.container.toUpperCase()}，以支持 ${h}P。`, 'success');
-          }
-          renderOptions();
-        }))));
-
-    $('res-fieldset').hidden = state.container === 'mp3';
-    $('download-btn').disabled = !window.buildDownloadPayload(p, state.container, state.height);
-  };
-
-  const renderSubtitles = (p) => {
-    const available = Array.isArray(p.subtitles) ? p.subtitles : [];
-    state.subtitles = state.subtitles.filter((l) => available.includes(l));
-    $('sub-block').hidden = available.length === 0;
-    $('sub-opts').replaceChildren(...available.map((lang) =>
-      chip(lang, state.subtitles.includes(lang), () => {
-        state.subtitles = state.subtitles.includes(lang)
-          ? state.subtitles.filter((l) => l !== lang)
-          : [...state.subtitles, lang];
-        renderSubtitles(p);
-      })));
-  };
-
-  const renderParsed = (p) => {
-    state.parsed = p;
-    state.subtitles = [];
-    $('media-title').textContent = p.title || '未命名视频';
-    $('media-duration').textContent = durationText(p.duration);
-    const img = $('thumb');
-    img.hidden = !p.thumbnail;
-    img.src = p.thumbnail || '';
-    $('result-area').hidden = false;
-    renderOptions();
-    renderSubtitles(p);
-  };
-
-  const parseLink = async (url, msg = '正在解析链接…') => {
-    setStatus($('parse-status'), msg);
-    const res = await request('/api/解析', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url }),
-    });
-    const data = await res.json();
-    data.url = url;
-    renderParsed(data);
-    setStatus($('parse-status'), '解析完成，请选择可用格式与清晰度。', 'success');
-    return data;
-  };
-
-  const download = async () => {
-    const payload = window.buildDownloadPayload(state.parsed, state.container, state.height);
-    if (!payload) {
-      setStatus($('parse-status'), '当前选择已不可用，请重新解析链接。', 'error');
-      return;
-    }
-    const btn = $('download-btn');
-    btn.disabled = true;
-    setStatus($('parse-status'), '正在提交下载任务…', 'success');
-    try {
-      await request('/api/下载', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      setStatus($('parse-status'), '已加入后台下载任务，可关闭页面。', 'success');
-      startPolling();
+      const media = await api('解析', { method: 'POST', json: { url } });
+      state.media = media; state.url = url; state.subs.clear();
+      renderResult();
     } catch (err) {
-      setStatus($('parse-status'), err.message, 'error');
-    } finally {
-      btn.disabled = !window.buildDownloadPayload(state.parsed, state.container, state.height);
+      $('#result-empty').hidden = false;
+      throw err;
+    } finally { $('#result-loading').hidden = true; }
+  });
+});
+
+function heightsOf(formats) {
+  const map = new Map();
+  for (const f of formats) {
+    if (!f.has_video || !f.height) continue;
+    const size = f.filesize || f.filesize_approx || 0;
+    const prev = map.get(f.height);
+    if (!prev || size > prev.size) map.set(f.height, { size, exts: new Set([...(prev?.exts || []), f.ext]) });
+    else prev.exts.add(f.ext);
+  }
+  const audio = Math.max(0, ...formats.filter((f) => f.has_audio && !f.has_video).map((f) => f.filesize || f.filesize_approx || 0));
+  return [...map.entries()].sort((a, b) => b[0] - a[0]).map(([h, v]) => ({ h, size: v.size ? v.size + audio : 0, exts: v.exts }));
+}
+const resLabel = (h) => h >= 4320 ? '8K' : h >= 2160 ? '4K' : h >= 1440 ? '2K' : h + 'P';
+
+function renderResult() {
+  const m = state.media;
+  $('#thumb').src = m.thumbnail || '';
+  $('#duration').textContent = fmtDur(m.duration);
+  $('#media-title').textContent = m.title;
+  const date = m.upload_date ? `${m.upload_date.slice(0, 4)}-${m.upload_date.slice(4, 6)}-${m.upload_date.slice(6)}` : '';
+  $('#media-meta').textContent = [m.uploader, m.site, m.view_count ? fmtCount(m.view_count) + ' 播放' : '', date].filter(Boolean).join(' · ');
+
+  const hs = heightsOf(m.formats);
+  const hasAudio = m.formats.some((f) => f.has_audio);
+  state.kind = hs.length ? 'video' : hasAudio ? 'audio' : 'cover';
+  state.height = hs[0]?.h ?? null;
+  $('[data-kind="video"]').disabled = !hs.length;
+  $('[data-kind="audio"]').disabled = !hasAudio;
+  $('[data-kind="cover"]').disabled = !m.thumbnail;
+
+  $('#res-opts').innerHTML = hs.map((x) =>
+    `<button type="button" data-h="${x.h}">${resLabel(x.h)}${x.size ? `<small>${fmtShort(x.size)}</small>` : ''}</button>`).join('');
+  $('#afmt-opts').innerHTML = ['mp3', 'm4a'].map((x) => `<button type="button" data-a="${x}">${x.toUpperCase()}</button>`).join('');
+  $('#sub-wrap').hidden = !m.subtitles.length;
+  $('#sub-opts').innerHTML = m.subtitles.slice(0, 30).map((s) => `<button type="button" data-s="${esc(s)}">${esc(langName(s))}</button>`).join('');
+  $('#result').hidden = false;
+  syncOptions();
+}
+function langName(code) {
+  try { return new Intl.DisplayNames(['zh-CN'], { type: 'language' }).of(code.replace('_', '-')) || code; } catch { return code; }
+}
+function containersFor(h) {
+  const x = heightsOf(state.media.formats).find((v) => v.h === h);
+  const list = ['mp4', 'mkv', 'webm'].filter((c) => c === 'mkv' || x?.exts.has(c));
+  return list.length ? list : ['mkv'];
+}
+function syncOptions() {
+  $$('#kind-seg button').forEach((b) => b.classList.toggle('on', b.dataset.kind === state.kind));
+  $('#video-opts').hidden = state.kind !== 'video';
+  $('#audio-opts').hidden = state.kind !== 'audio';
+  $('#sub-wrap').hidden = state.kind !== 'video' || !state.media.subtitles.length;
+  $$('#res-opts button').forEach((b) => b.classList.toggle('on', +b.dataset.h === state.height));
+  if (state.kind === 'video') {
+    const cs = containersFor(state.height);
+    if (!cs.includes(state.container)) state.container = cs[0];
+    $('#fmt-opts').innerHTML = cs.map((c) => `<button type="button" data-c="${c}" class="${c === state.container ? 'on' : ''}">${c.toUpperCase()}</button>`).join('');
+  }
+  $$('#afmt-opts button').forEach((b) => b.classList.toggle('on', b.dataset.a === state.audio));
+  $$('#sub-opts button').forEach((b) => b.classList.toggle('on', state.subs.has(b.dataset.s)));
+  updateSaveHint();
+}
+function updateSaveHint() {
+  if (!state.media) return;
+  const ext = state.kind === 'video' ? state.container : state.kind === 'audio' ? state.audio : 'jpg';
+  const site = sys['按站点分类'] && state.media.site ? '/' + state.media.site : '';
+  $('#save-hint').textContent = `保存至 ${sys['下载目录'] || 'NAS'}${site} · ${ext.toUpperCase()}`;
+}
+$('#result').addEventListener('click', (e) => {
+  const b = e.target.closest('button');
+  if (!b || b.disabled) return;
+  if (b.dataset.kind) state.kind = b.dataset.kind;
+  else if (b.dataset.h) state.height = +b.dataset.h;
+  else if (b.dataset.c) state.container = b.dataset.c;
+  else if (b.dataset.a) state.audio = b.dataset.a;
+  else if (b.dataset.s) state.subs.has(b.dataset.s) ? state.subs.delete(b.dataset.s) : state.subs.add(b.dataset.s);
+  else return;
+  syncOptions();
+});
+$('#download-btn').addEventListener('click', (e) => busy(e.currentTarget, async () => {
+  const body = { url: state.url, container: 'jpg', height: null, subtitles: [] };
+  if (state.kind === 'video') Object.assign(body, { container: state.container, height: state.height, subtitles: [...state.subs] });
+  if (state.kind === 'audio') body.container = state.audio;
+  await api('下载', { method: 'POST', json: body });
+  toast('已加入下载队列');
+  pollSoon();
+}));
+
+/* ---------------- 任务 ---------------- */
+let jobs = [];
+const STATUS = {
+  '排队中': ['wt', '等待'], '准备中': ['run', '准备中'], '下载中': ['run', ''], '合并中': ['run', '处理中'],
+  '暂停中': ['wt', '暂停中'], '取消中': ['wt', '取消中'], '已完成': ['ok', '完成'], '已取消': ['', '已取消'], '可继续': ['er', '需处理'],
+};
+const isActive = (j) => ['排队中', '准备中', '下载中', '合并中', '暂停中', '取消中'].includes(j.status);
+let jobFilter = 'all';
+
+function jobNode(j) {
+  const n = $('#job-tpl').content.firstElementChild.cloneNode(true);
+  const img = $('img', n);
+  if (j.thumbnail) img.src = j.thumbnail; else img.removeAttribute('src');
+  $('.j-title', n).textContent = j.title;
+  const [cls, label] = STATUS[j.status] || ['', j.status];
+  const pct = j.total ? Math.min(100, Math.round(j.downloaded / j.total * 100)) : 0;
+  const st = $('.st', n);
+  st.className = 'st ' + cls;
+  st.textContent = j.status === '下载中' ? (j.total ? pct + '%' : '下载中') : (j.status === '可继续' && j.error === '已暂停' ? '已暂停' : label);
+  const fmt = j.container === 'jpg' ? '封面' : j.height ? `${resLabel(j.height)} · ${j.container.toUpperCase()}` : `音频 · ${j.container.toUpperCase()}`;
+  let left = fmt, right = '';
+  if (j.status === '下载中') {
+    left = j.total ? `${fmtBytes(j.downloaded)} / ${fmtBytes(j.total)}` : fmtBytes(j.downloaded);
+    if (j.speed) {
+      right = fmtBytes(j.speed) + '/s';
+      if (j.total) right += ' · 剩 ' + fmtDur((j.total - j.downloaded) / j.speed);
     }
+  } else if (j.status === '已完成') { left = `${fmt} · ${fmtBytes(j.total)}`; right = fmtTime(j.updated_at); }
+  else if (j.status === '排队中') right = '排队中';
+  else right = fmtTime(j.created_at);
+  $('.j-left', n).textContent = left;
+  $('.j-right', n).textContent = right;
+  const track = $('.track', n);
+  if (['下载中', '合并中'].includes(j.status) && j.total) $('i', track).style.width = (j.status === '合并中' ? 100 : pct) + '%';
+  else track.remove();
+  $('.j-err', n).textContent = j.status === '可继续' && j.error !== '已暂停' ? j.error || '' : '';
+  const acts = $('.j-acts', n);
+  const btn = (act, icon, title, cls = '') => `<button class="icon-btn ${cls}" data-act="${act}" data-id="${j.id}" title="${title}" aria-label="${title}"><svg><use href="#i-${icon}"/></svg></button>`;
+  let html = '';
+  if (['排队中', '准备中', '下载中'].includes(j.status)) html += btn('暂停', 'pause', '暂停');
+  if (['可继续', '已取消'].includes(j.status)) html += btn('继续', j.status === '可继续' && j.error === '已暂停' ? 'play' : 'retry', '继续');
+  if (isActive(j) && j.status !== '取消中') html += btn('取消', 'x', '取消');
+  if (j.status === '已完成' && j.saved_path) html += btn('打开', 'play', '预览');
+  if (!isActive(j)) html += btn('删除', 'trash', '删除记录', 'danger');
+  acts.innerHTML = html;
+  return n;
+}
+function renderJobs() {
+  const recent = jobs.slice(0, 6);
+  const r = $('#recent-jobs');
+  r.replaceChildren(...recent.map(jobNode));
+  if (!recent.length) r.innerHTML = '<div class="list-empty">还没有任务</div>';
+  const f = {
+    all: () => true, active: isActive, done: (j) => j.status === '已完成', failed: (j) => j.status === '可继续',
+  }[jobFilter];
+  const list = jobs.filter(f);
+  const a = $('#all-jobs');
+  a.replaceChildren(...list.map(jobNode));
+  if (!list.length) a.innerHTML = '<div class="list-empty">这里空空如也</div>';
+  const active = jobs.filter(isActive).length;
+  $$('[data-count="active"]').forEach((el) => el.textContent = active || '');
+}
+async function loadJobs() {
+  try { jobs = await api('下载/任务'); renderJobs(); } catch { /* 静默 */ }
+}
+document.addEventListener('click', async (e) => {
+  const b = e.target.closest('[data-act]');
+  if (!b) return;
+  const { act, id } = b.dataset;
+  const j = jobs.find((x) => x.id === id);
+  try {
+    if (act === '打开') return openViewer(libPath(j.saved_path), j.title);
+    if (act === '删除') await api(`下载/任务/${id}`, { method: 'DELETE' });
+    else await api(`下载/任务/${id}/${act}`, { method: 'POST' });
+    pollSoon();
+  } catch (err) { toast(err.message, true); }
+});
+const libPath = (p) => {
+  const root = (sys['下载目录'] || '').replace(/\/$/, '') + '/';
+  return p.startsWith(root) ? p.slice(root.length) : p;
+};
+$('#job-filter').addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  jobFilter = b.dataset.f;
+  $$('#job-filter button').forEach((x) => x.classList.toggle('on', x === b));
+  renderJobs();
+});
+$('#pause-all').addEventListener('click', (e) => busy(e.currentTarget, async () => { const r = await api('下载/任务/全部暂停', { method: 'POST' }); toast(`已暂停 ${r['数量']} 个任务`); pollSoon(); }));
+$('#resume-all').addEventListener('click', (e) => busy(e.currentTarget, async () => { const r = await api('下载/任务/全部继续', { method: 'POST' }); toast(`已继续 ${r['数量']} 个任务`); pollSoon(); }));
+$('#clear-done').addEventListener('click', (e) => busy(e.currentTarget, async () => { const r = await api('下载/任务', { method: 'DELETE' }); toast(`已清除 ${r['数量']} 条记录`); pollSoon(); }));
+
+// 自适应轮询：有活动任务 1s，空闲 8s，页面隐藏时暂停
+let pollTimer;
+function schedule() {
+  clearTimeout(pollTimer);
+  if (document.hidden) return;
+  pollTimer = setTimeout(tick, jobs.some(isActive) ? 1000 : 8000);
+}
+let lastActive = 0;
+async function tick() {
+  await loadJobs();
+  const active = jobs.filter(isActive).length;
+  if (active < lastActive) { loadSystem(); if (!$('#view-library').hidden) loadLibrary(); }
+  lastActive = active;
+  schedule();
+}
+function pollSoon() { clearTimeout(pollTimer); pollTimer = setTimeout(tick, 200); }
+document.addEventListener('visibilitychange', () => document.hidden ? clearTimeout(pollTimer) : pollSoon());
+
+/* ---------------- 媒体库 ---------------- */
+let libTimer;
+async function loadLibrary() {
+  let items;
+  try { items = await api('媒体库?q=' + encodeURIComponent($('#lib-search').value.trim())); } catch (e) { return toast(e.message, true); }
+  const total = items.reduce((a, b) => a + b.size, 0);
+  bind('lib-summary', `${items.length} 个文件 · ${fmtBytes(total) || '0 B'}`);
+  $$('[data-count="library"]').forEach((el) => el.textContent = items.length || '');
+  const grid = $('#lib-grid');
+  if (!items.length) { grid.innerHTML = '<div class="card glass list-empty" style="grid-column:1/-1">还没有下载内容</div>'; return; }
+  grid.innerHTML = items.map((it) => `
+    <article class="tile glass" data-path="${esc(it.path)}" data-name="${esc(it.name)}" tabindex="0">
+      <div class="cv">${it.cover ? `<img loading="lazy" alt="" src="/api/媒体库/文件?path=${encodeURIComponent(it.cover)}">` : ''}<span>${esc(it.ext)}</span></div>
+      <div class="ti"><b>${esc(it.name)}</b><p>${fmtBytes(it.size)} · ${fmtTime(it.mtime)}</p></div>
+    </article>`).join('');
+}
+$('#lib-search').addEventListener('input', () => { clearTimeout(libTimer); libTimer = setTimeout(loadLibrary, 250); });
+$('#lib-grid').addEventListener('click', (e) => {
+  const t = e.target.closest('.tile'); if (t) openViewer(t.dataset.path, t.dataset.name);
+});
+$('#lib-grid').addEventListener('keydown', (e) => {
+  const t = e.target.closest('.tile'); if (t && e.key === 'Enter') openViewer(t.dataset.path, t.dataset.name);
+});
+
+function openViewer(path, name) {
+  const url = '/api/媒体库/文件?path=' + encodeURIComponent(path);
+  const ext = path.split('.').pop().toLowerCase();
+  const media = ['mp3', 'm4a', 'opus', 'flac', 'wav'].includes(ext) ? `<audio src="${url}" controls autoplay></audio>`
+    : ['jpg', 'jpeg', 'png', 'webp'].includes(ext) ? `<img src="${url}" alt="">`
+    : `<video src="${url}" controls autoplay playsinline></video>`;
+  $('#viewer-body').innerHTML = `${media}<h3>${esc(name)}</h3><p class="muted small mono">${esc(path)}</p>
+    <div class="row-btns"><a class="btn ghost" href="${url}&download=true">下载到本机</a><button class="btn ghost danger" id="lib-del">删除文件</button></div>`;
+  $('#lib-del').onclick = async () => {
+    if (!confirm(`确定删除「${name}」？此操作不可恢复。`)) return;
+    try { await api('媒体库/文件?path=' + encodeURIComponent(path), { method: 'DELETE' }); closeViewer(); toast('已删除'); loadLibrary(); loadSystem(); } catch (e) { toast(e.message, true); }
   };
+  $('#viewer').showModal();
+}
+function closeViewer() { $('#viewer-body').innerHTML = ''; $('#viewer').close(); }
+$('#viewer').addEventListener('click', (e) => { if (e.target === e.currentTarget || e.target.closest('[data-close]')) closeViewer(); });
+$('#viewer').addEventListener('close', () => $('#viewer-body').innerHTML = '');
 
-  const bytes = (v) => {
-    if (!Number.isFinite(v) || v < 1) return '0 B';
-    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-    const i = Math.min(Math.floor(Math.log(v) / Math.log(1024)), units.length - 1);
-    return `${(v / 1024 ** i).toFixed(i ? 1 : 0)} ${units[i]}`;
-  };
-
-  const jobMeta = (j) =>
-    `${String(j.container || '').toUpperCase()}` +
-    `${j.height ? ` · ${j.height}P` : ' · 音频'}` +
-    `${j.subtitles?.length ? ` · 字幕 ${j.subtitles.join('、')}` : ''}`;
-
-  const actionBtn = (label, onClick, className = 'btn-secondary') => {
-    const btn = document.createElement('button');
-    btn.className = className;
-    btn.type = 'button';
-    btn.textContent = label;
-    btn.addEventListener('click', onClick);
-    return btn;
-  };
-
-  const jobItem = (j) => {
-    const tpl = $('job-tpl').content.firstElementChild.cloneNode(true);
-    const dl = (sel) => tpl.querySelector(sel);
-    dl('.job-name').textContent = j.title || '正在解析…';
-    const badge = dl('.badge');
-    badge.textContent = j.status;
-    badge.dataset.status = j.status;
-    dl('.job-meta-line').textContent = jobMeta(j);
-    const downloaded = Number(j.downloaded) || 0;
-    const total = Number(j.total) || 0;
-    const pct = total ? Math.min(100, Math.round(downloaded / total * 100)) : 0;
-    dl('.progress-track').setAttribute('aria-valuenow', String(pct));
-    dl('.progress-fill').style.width = `${pct}%`;
-    dl('.job-progress').textContent =
-      j.status === '已完成' ? `已完成 · ${bytes(total || downloaded)}` :
-      j.status === '取消中' ? '正在取消并清理临时文件…' :
-      j.status === '已取消' ? '已取消，临时文件已清理。' :
-      total
-        ? `${pct}% · ${bytes(downloaded)} / ${bytes(total)} · ${j.speed ? `${bytes(Number(j.speed))}/秒` : '等待中'}`
-        : `${bytes(downloaded)} 已下载 · ${j.speed ? `${bytes(Number(j.speed))}/秒` : '等待中'}`;
-    const errEl = dl('.job-error');
-    errEl.hidden = !j.error;
-    errEl.textContent = j.error || '';
-    const actions = dl('.job-actions');
-    if (j.status === '可继续') {
-      actions.append(actionBtn('继续下载', async () => {
-        try { await request(`/api/下载/任务/${j.id}/继续`, { method: 'POST' }); startPolling(); }
-        catch (err) { setStatus($('parse-status'), err.message, 'error'); }
-      }));
-    }
-    if (ACTIVE_STATUSES.has(j.status) && j.status !== '取消中') {
-      actions.append(actionBtn('取消下载', async () => {
-        if (!window.confirm('确定取消下载并删除当前临时片段吗？')) return;
-        try { await request(`/api/下载/任务/${j.id}/取消`, { method: 'POST' }); startPolling(); }
-        catch (err) { setStatus($('parse-status'), err.message, 'error'); }
-      }, 'btn-text'));
-    }
-    if (j.status === '可继续') {
-      actions.append(actionBtn('删除临时文件', async () => {
-        if (!window.confirm('确定删除该任务及其临时文件吗？')) return;
-        try { await request(`/api/下载/任务/${j.id}`, { method: 'DELETE' }); startPolling(); }
-        catch (err) { setStatus($('parse-status'), err.message, 'error'); }
-      }, 'btn-text'));
-    }
-    return tpl;
-  };
-
-  const historyMeta = (item) =>
-    `${String(item.container || '').toUpperCase()}` +
-    `${item.height ? ` · ${item.height}P` : ' · 音频'}` +
-    ` · ${new Date(item.created_at).toLocaleString('zh-CN')}`;
-
-  const historyItem = (item) => {
-    const li = document.createElement('li');
-    li.className = 'hist-item';
-    const audio = item.container === 'mp3';
-    const ic = document.createElement('div');
-    ic.className = `hist-icon${audio ? ' hist-icon--audio' : ''}`;
-    ic.innerHTML = audio
-      ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>'
-      : '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3v12m0 0-4-4m4 4 4-4M5 19h14"/></svg>';
-    const body = document.createElement('div');
-    body.className = 'hist-body';
-    const title = document.createElement('div');
-    title.className = 'hist-title';
-    title.textContent = item.title || '未命名视频';
-    const meta = document.createElement('div');
-    meta.className = 'hist-meta';
-    meta.textContent = historyMeta(item);
-    body.append(title, meta);
-    const actions = document.createElement('div');
-    actions.className = 'hist-actions';
-    const repeatBtn = document.createElement('button');
-    repeatBtn.className = 'btn-secondary';
-    repeatBtn.type = 'button';
-    repeatBtn.textContent = '重新下载';
-    repeatBtn.addEventListener('click', async () => {
-      $('url-input').value = item.url;
-      try {
-        const parsed = await parseLink(item.url, '正在重新解析链接…');
-        const match = window.matchHistoryChoice(parsed, item);
-        if (!match) throw new Error('当前链接不再提供该格式或清晰度，请重新选择。');
-        state.container = match.container;
-        state.height = match.height;
-        renderOptions();
-        download();
-      } catch (err) { setStatus($('parse-status'), err.message, 'error'); }
-    });
-    const removeBtn = document.createElement('button');
-    removeBtn.className = 'btn-text';
-    removeBtn.type = 'button';
-    removeBtn.textContent = '删除';
-    removeBtn.addEventListener('click', async () => {
-      if (!window.confirm('确定删除这条下载记录吗？')) return;
-      try { await request(`/api/历史/${item.id}`, { method: 'DELETE' }); await loadHistory(); }
-      catch (err) { setStatus($('parse-status'), err.message, 'error'); }
-    });
-    actions.append(repeatBtn, removeBtn);
-    li.append(ic, body, actions);
-    return li;
-  };
-
-  const loadHistory = async () => {
-    try {
-      const items = await (await request('/api/历史')).json();
-      $('history-list').replaceChildren(...items.map(historyItem));
-      $('history-empty').hidden = items.length > 0;
-      $('clear-history').disabled = items.length === 0;
-    } catch (_) { setStatus($('parse-status'), '无法读取下载历史。', 'error'); }
-  };
-
-  const modal = $('settings-modal');
-  const focusable = () => [...modal.querySelectorAll('button:not([disabled]),input:not([disabled])')];
-  const closeModal = () => { modal.hidden = true; state.previousFocus?.focus(); };
-
-  const loadProxy = async () => {
-    const st = $('proxy-status');
-    try {
-      const data = await (await request('/api/代理')).json();
-      $('proxy-input').value = '';
-      $('proxy-input').placeholder = data.已设置 ? '输入完整地址以替换当前代理' : 'http://127.0.0.1:7890';
-      setStatus(st, data.已设置 ? `当前代理：${data.地址}` : '当前未设置代理。', data.已设置 ? 'success' : '');
-    } catch (_) { setStatus(st, '无法读取代理设置。', 'error'); }
-  };
-
-  const loadCookies = async () => {
-    const st = $('cookies-status');
-    try {
-      const data = await (await request('/api/Cookies')).json();
-      setStatus(st, data.已设置 ? '已导入 Cookies。' : '当前未导入 Cookies。', data.已设置 ? 'success' : '');
-    } catch (_) { setStatus(st, '无法读取 Cookies 状态。', 'error'); }
-  };
-
-  const openModal = async () => {
-    state.previousFocus = document.activeElement;
-    modal.hidden = false;
-    await Promise.all([loadProxy(), loadCookies()]);
-    $('proxy-input').focus();
-  };
-
-  $('parse-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const url = $('url-input').value.trim();
-    if (!url) { setStatus($('parse-status'), '请输入视频链接。', 'error'); return; }
-    const btn = $('parse-btn');
-    btn.disabled = true;
-    try { await parseLink(url); }
-    catch (err) { setStatus($('parse-status'), err.message, 'error'); }
-    finally { btn.disabled = false; }
+/* ---------------- 设置 ---------------- */
+async function loadSettings() {
+  loadSystem();
+  try { const p = await api('代理'); $('#proxy-input').value = p['地址']; } catch { /* */ }
+  loadCookies();
+}
+async function loadCookies() {
+  try {
+    const c = await api('Cookies');
+    $('#cookie-sites').innerHTML = c['站点'].length ? c['站点'].map((s) => `<span>${esc(s)}</span>`).join('') : '<p class="muted small">尚未导入</p>';
+  } catch { /* */ }
+}
+const proxyMsg = (t) => $('#proxy-msg').textContent = t;
+$('#proxy-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  busy($('button', e.currentTarget), async () => {
+    const r = await api('代理', { method: 'PUT', json: { 地址: $('#proxy-input').value.trim() } });
+    $('#proxy-input').value = r['地址']; toast(r['已设置'] ? '代理已保存' : '代理已清除'); loadSystem();
   });
-  $('download-btn').addEventListener('click', download);
-  $('clear-history').addEventListener('click', async () => {
-    if (!window.confirm('确定清空所有共享下载记录吗？')) return;
-    await request('/api/历史', { method: 'DELETE' });
-    await loadHistory();
-  });
-  $('open-settings').addEventListener('click', openModal);
-  $('close-settings').addEventListener('click', closeModal);
-  modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
+});
+$('#proxy-detect').addEventListener('click', (e) => busy(e.currentTarget, async () => {
+  proxyMsg('正在扫描本机常见端口…');
+  const r = await api('代理/自动检测', { method: 'POST' });
+  proxyMsg(r['消息']); if (r['已设置']) $('#proxy-input').value = r['地址']; loadSystem();
+}));
+$('#proxy-test').addEventListener('click', (e) => busy(e.currentTarget, async () => {
+  const r = await api('代理/测试', { method: 'POST' });
+  proxyMsg(r['可用'] ? `可用 · ${r['延迟']} ms` : r['消息']);
+}));
+$('#proxy-clear').addEventListener('click', (e) => busy(e.currentTarget, async () => {
+  await api('代理', { method: 'DELETE' }); $('#proxy-input').value = ''; proxyMsg(''); toast('代理已清除'); loadSystem();
+}));
+$('#cookie-file').addEventListener('change', async (e) => {
+  const f = e.target.files[0]; if (!f) return;
+  try {
+    await api('Cookies', { method: 'PUT', body: await f.arrayBuffer(), headers: { 'Content-Type': 'text/plain' } });
+    toast('Cookies 已导入'); loadCookies();
+  } catch (err) { toast(err.message, true); }
+  e.target.value = '';
+});
+$('#cookie-clear').addEventListener('click', (e) => {
+  if (!confirm('确定清除全部 Cookies？')) return;
+  busy(e.currentTarget, async () => { await api('Cookies', { method: 'DELETE' }); toast('已清除'); loadCookies(); });
+});
+$$('.stepper button').forEach((b) => b.addEventListener('click', async () => {
+  const v = Math.max(1, Math.min(6, (+$('#conc').textContent) + (+b.dataset.step)));
+  try { sys = await api('设置', { method: 'PUT', json: { concurrency: v } }); $('#conc').textContent = sys['并发']; } catch (e) { toast(e.message, true); }
+}));
+$('#site-folders').addEventListener('change', async (e) => {
+  try { sys = await api('设置', { method: 'PUT', json: { site_folders: e.target.checked } }); updateSaveHint(); } catch (err) { toast(err.message, true); }
+});
+$('#update-ytdlp').addEventListener('click', async (e) => {
+  const b = e.currentTarget; b.textContent = '更新中…'; b.disabled = true;
+  try {
+    const r = await api('系统/更新解析器', { method: 'POST' });
+    if (r['需要重启']) {
+      toast(`已更新到 ${r['更新后']}，正在重启服务…`);
+      await api('系统/重启', { method: 'POST' }).catch(() => {});
+      setTimeout(() => location.reload(), 4000);
+    } else toast('已是最新版本');
+  } catch (err) { toast(err.message, true); }
+  b.textContent = '检查更新'; b.disabled = false;
+});
 
-  $('proxy-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const addr = $('proxy-input').value.trim();
-    const st = $('proxy-status');
-    if (!addr) { setStatus(st, '请输入完整代理地址；清除请使用「清除」按钮。', 'error'); return; }
-    try {
-      const data = await (await request('/api/代理', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 地址: addr }),
-      })).json();
-      $('proxy-input').value = '';
-      setStatus(st, `已保存代理：${data.地址}`, 'success');
-    } catch (err) { setStatus(st, err.message, 'error'); }
-  });
-  $('auto-detect-proxy').addEventListener('click', async () => {
-    const st = $('proxy-status');
-    setStatus(st, '正在检测代理…');
-    try {
-      const data = await (await request('/api/代理/自动检测', { method: 'POST' })).json();
-      setStatus(st, data.消息, data.已设置 ? 'success' : 'error');
-      $('proxy-input').value = '';
-    } catch (err) { setStatus(st, err.message, 'error'); }
-  });
-  $('clear-proxy').addEventListener('click', async () => {
-    const st = $('proxy-status');
-    try {
-      await request('/api/代理', { method: 'DELETE' });
-      $('proxy-input').value = '';
-      setStatus(st, '已清除代理。', 'success');
-    } catch (err) { setStatus(st, err.message, 'error'); }
-  });
-  $('import-cookies').addEventListener('click', async () => {
-    const st = $('cookies-status');
-    const file = $('cookies-input').files[0];
-    if (!file) { setStatus(st, '请选择 cookies.txt 文件。', 'error'); return; }
-    const btn = $('import-cookies');
-    btn.disabled = true;
-    setStatus(st, '正在导入 Cookies…');
-    try {
-      await request('/api/Cookies', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
-        body: file,
-      });
-      $('cookies-input').value = '';
-      await loadCookies();
-    } catch (err) { setStatus(st, err.message, 'error'); }
-    finally { btn.disabled = false; }
-  });
-  $('clear-cookies').addEventListener('click', async () => {
-    const st = $('cookies-status');
-    if (!window.confirm('确定清除已导入的 Cookies 吗？')) return;
-    try {
-      await request('/api/Cookies', { method: 'DELETE' });
-      $('cookies-input').value = '';
-      await loadCookies();
-    } catch (err) { setStatus(st, err.message, 'error'); }
-  });
-
-  document.addEventListener('keydown', (e) => {
-    if (modal.hidden) return;
-    if (e.key === 'Escape') { e.preventDefault(); closeModal(); return; }
-    if (e.key === 'Tab') {
-      const targets = focusable();
-      const first = targets[0];
-      const last = targets.at(-1);
-      if (!first) return;
-      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
-      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
-    }
-  });
-
-  loadHistory();
-  startPolling();
-})();
+/* ---------------- 启动 ---------------- */
+bind('today', new Date().toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' }));
+route();
+loadSystem();
+tick();
+api('媒体库').then((x) => $$('[data-count="library"]').forEach((el) => el.textContent = x.length || '')).catch(() => {});
+const shared = new URLSearchParams(location.search).get('url') || new URLSearchParams(location.search).get('text');
+if (shared) {
+  const m = shared.match(/https?:\/\/\S+/);
+  if (m) { $('#url-input').value = m[0]; history.replaceState(null, '', '/'); $('#parse-form').requestSubmit(); }
+}
