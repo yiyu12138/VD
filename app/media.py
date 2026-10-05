@@ -15,6 +15,37 @@ DIRECT_FALLBACK_DOMAINS: frozenset[str] = frozenset({
 
 QUALITY_KEYS: tuple[str, ...] = ('tbr', 'vbr', 'abr', 'filesize', 'filesize_approx')
 
+# 各容器的首选编码（顺序即优先级）：mp4 优先 H.264 —— YouTube 的 1080p 里
+# 有 VP9 封进 mp4 的流（itag 613/614/615），码率往往最高，被选中后虽然桌面
+# Chrome 能放，但 iPhone/iPad、Safari、Firefox 和多数电视/播放器都放不了。
+CODEC_FAMILIES: dict[str, str] = {
+    'avc1': 'h264', 'avc3': 'h264', 'h264': 'h264',
+    'hev1': 'hevc', 'hvc1': 'hevc', 'h265': 'hevc',
+    'av01': 'av1',
+    'vp09': 'vp9', 'vp9': 'vp9', 'vp08': 'vp8', 'vp8': 'vp8',
+    'mp4a': 'aac', 'aac': 'aac', 'mp3': 'mp3',
+    'opus': 'opus', 'vorbis': 'vorbis', 'flac': 'flac', 'ac-3': 'ac3', 'ec-3': 'eac3',
+}
+VIDEO_CODECS: dict[str, tuple[str, ...]] = {
+    'mp4': ('h264', 'hevc', 'av1'),
+    'webm': ('vp9', 'vp8', 'av1'),
+    'mov': ('h264', 'hevc'),
+}
+AUDIO_CODECS: dict[str, tuple[str, ...]] = {
+    'mp4': ('aac', 'mp3', 'ac3', 'eac3'),
+    'webm': ('opus', 'vorbis'),
+    'mov': ('aac', 'mp3', 'ac3', 'eac3'),
+}
+AUDIO_EXT: dict[str, set[str]] = {
+    'mp4': {'m4a', 'mp4', 'aac'},
+    'mov': {'m4a', 'mp4', 'aac'},
+}
+
+
+def codec_family(value: object) -> str:
+    """把 yt-dlp 的 vcodec/acodec（如 avc1.640028、vp09.00.10.08）归成编码族名。"""
+    return CODEC_FAMILIES.get(str(value or '').strip().lower().split('.')[0], str(value or '').strip().lower().split('.')[0])
+
 class StopDownload(Exception):
     """用户主动取消/暂停，不应触发直连重试。"""
 
@@ -122,6 +153,8 @@ def parse_media(url: str, proxy: str | None) -> dict:
             'ext': str(item.get('ext') or '').lower(),
             'has_video': has_video,
             'has_audio': has_audio,
+            'vcodec': item.get('vcodec'),
+            'acodec': item.get('acodec'),
         }
         parsed.update({key: item.get(key) for key in QUALITY_KEYS})
         formats.append(parsed)
@@ -150,7 +183,32 @@ def select_format(formats: list[dict], container: str, height: int | None) -> st
         return tuple(item.get(key) or 0 for key in QUALITY_KEYS)
 
     def compatible(item: dict) -> bool:
-        return container == 'mkv' or item.get('ext') == container
+        if container == 'mkv':
+            return True
+        if item.get('ext') == container:
+            return True
+        # 有些站点的 m4a 音频 ext 标成 mp4，mp4 容器下当作同族
+        return container in AUDIO_EXT and item.get('ext') in AUDIO_EXT[container]
+
+    def codec_of(item: dict, kind: str) -> str:
+        return codec_family(item.get('vcodec') if kind == 'video' else item.get('acodec'))
+
+    def codec_ok(item: dict, kind: str) -> bool:
+        table = VIDEO_CODECS if kind == 'video' else AUDIO_CODECS
+        if container == 'mkv' or container not in table:
+            return True
+        family = codec_of(item, kind)
+        return not family or family in table[container]
+
+    def rank(item: dict, kind: str) -> tuple:
+        """同清晰度下先看编码通用性（mp4 优先 H.264），再看码率。"""
+        table = VIDEO_CODECS if kind == 'video' else AUDIO_CODECS
+        priority = 0
+        if container != 'mkv' and container in table:
+            family = codec_of(item, kind)
+            if family in table[container]:
+                priority = len(table[container]) - table[container].index(family)
+        return (priority, quality(item))
 
     if container in {'mp3', 'm4a'}:
         audio = (
@@ -167,20 +225,19 @@ def select_format(formats: list[dict], container: str, height: int | None) -> st
     ]
     if not video:
         raise ValueError('所选清晰度当前不可用')
-    selected_video = max(video, key=quality)
+    friendly = [item for item in video if codec_ok(item, 'video')] or video
+    selected_video = max(friendly, key=lambda item: rank(item, 'video'))
     if selected_video.get('has_audio'):
         return selected_video['id']
 
     audio = [
         item for item in formats
-        if item.get('has_audio') and not item.get('has_video')
-        and (container == 'mkv' or item.get('ext') in (
-            {'m4a', 'mp4'} if container == 'mp4' else {container}
-        ))
+        if item.get('has_audio') and not item.get('has_video') and compatible(item)
     ]
     if not audio:
         raise ValueError('当前没有可用音频')
-    return f"{selected_video['id']}+{max(audio, key=quality)['id']}"
+    friendly_audio = [item for item in audio if codec_ok(item, 'audio')] or audio
+    return f"{selected_video['id']}+{max(friendly_audio, key=lambda item: rank(item, 'audio'))['id']}"
 
 
 def has_audio_track(path: Path) -> bool:

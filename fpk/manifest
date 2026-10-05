@@ -13,4 +13,4 @@ desktop_applaunchname = video-downloader.Application
 install_dep_apps      = python312
 ctl_stop              = true
 checkport             = false
-changelog             = v2.0.0：飞牛原生应用（不再使用 Docker）；全新 Apple 风格界面；新增任务队列、暂停/继续、媒体库、封面下载、解析器一键更新
+changelog             = v2.1.1：修复部分 YouTube 视频下载后无法播放（MP4 改为优先 H.264，不再选中 VP9 封装的流）
