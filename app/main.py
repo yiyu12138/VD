@@ -1,6 +1,7 @@
 import os
 import re
 import shutil
+import subprocess
 import sys
 import time
 import uuid
@@ -12,12 +13,14 @@ from urllib.parse import urlsplit
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict
-from starlette.responses import FileResponse, HTMLResponse
+from starlette.responses import FileResponse, HTMLResponse, Response
 
 from app import __version__
 from app.media import (
     download_cover,
     download_media,
+    embed_subtitles,
+    SUBTITLE_MODES,
     merge_cookie_files,
     parse_media,
     proxy_candidates,
@@ -135,6 +138,7 @@ class ProxyRequest(BaseModel):
 class SettingsRequest(BaseModel):
     concurrency: int | None = None
     site_folders: bool | None = None
+    subtitle_mode: str | None = None
 
 
 class DownloadRequest(BaseModel):
@@ -196,10 +200,20 @@ def destination_directory(title: str, site: str | None) -> Path:
     return candidate
 
 
-def move_subtitles(source: Path, target: Path, title: str) -> None:
-    for item in source.glob('*.srt'):
+def move_subtitles(source: Path, target: Path, title: str) -> list[tuple[Path, str]]:
+    """把临时目录里的字幕改名为「视频名.语言.srt」放到视频旁边（播放器会自动加载同名字幕）"""
+    moved = []
+    for item in sorted(source.glob('*.srt')):
         language = item.stem.rsplit('.', 1)[-1]
-        shutil.move(str(item), target / f'{safe_name(title)}.{language}.srt')
+        dest = target / f'{safe_name(title)}.{language}.srt'
+        shutil.move(str(item), dest)
+        moved.append((dest, language))
+    return moved
+
+
+def subtitle_mode() -> str:
+    mode = get_store().get_setting('subtitle_mode') or 'both'
+    return mode if mode in SUBTITLE_MODES else 'both'
 
 
 def run_download_job(job_id: str) -> None:
@@ -264,7 +278,15 @@ def run_download_job(job_id: str) -> None:
         final = target / f'{safe_name(parsed["title"])}.{request.container}'
         shutil.move(str(output), final)
         if request.subtitles:
-            move_subtitles(temp, target, parsed['title'])
+            subs = move_subtitles(temp, target, parsed['title'])
+            mode = subtitle_mode()
+            if subs and mode in ('both', 'embed'):
+                store.update_job(job_id, {'status': '合并中', 'speed': 0})
+                embedded = embed_subtitles(final, subs)
+                # 只嵌入：嵌入成功才删外挂文件；嵌入失败时保留外挂作为兜底
+                if embedded and mode == 'embed':
+                    for sub, _ in subs:
+                        sub.unlink(missing_ok=True)
         if request.container != 'jpg' and parsed['thumbnail']:
             try:
                 download_cover(parsed['thumbnail'], proxy, target, name='cover')
@@ -454,6 +476,41 @@ def _resolve_media(rel: str) -> Path:
     return path
 
 
+SUBTITLE_EXT = {'.srt', '.vtt', '.ass', '.ssa'}
+COVER_NAMES = ('cover.jpg', 'cover.jpeg', 'cover.png', 'cover.webp')
+
+
+def _hidden(path: Path, root: Path) -> bool:
+    """下载目录里以 . 开头的目录（如飞牛影视/相册生成的 .seekMeta 缩略图缓存）一律不属于下载内容"""
+    try:
+        parts = path.relative_to(root).parts
+    except ValueError:
+        return True
+    return any(p.startswith('.') or p.startswith('@') for p in parts)
+
+
+def _find_cover(folder: Path, stem: str) -> Path | None:
+    for name in COVER_NAMES:
+        p = folder / name
+        if p.exists():
+            return p
+    for ext in ('.jpg', '.jpeg', '.png', '.webp'):
+        p = folder / f'{stem}{ext}'
+        if p.exists():
+            return p
+    return None
+
+
+def _subtitle_lang(sub: Path, stem: str) -> str:
+    rest = sub.stem[len(stem):].lstrip('.') if sub.stem.startswith(stem) else sub.stem.rsplit('.', 1)[-1]
+    return rest or 'und'
+
+
+def _find_subtitles(folder: Path, stem: str) -> list[Path]:
+    return sorted(p for p in folder.iterdir()
+                  if p.is_file() and p.suffix.lower() in SUBTITLE_EXT and p.stem.startswith(stem))
+
+
 def _kind(path: Path) -> str | None:
     ext = path.suffix.lower()
     if ext in VIDEO_EXT:
@@ -466,29 +523,65 @@ def _kind(path: Path) -> str | None:
 
 
 @app.get('/api/媒体库')
-def library(q: str = ''):
+def library(q: str = '', all: bool = False):
+    """媒体库：默认只列出带封面的视频 / 音频（即本应用下载的成品）。
+
+    - 跳过隐藏目录（.seekMeta 等其它程序生成的缩略图 / 预览缓存）
+    - 不把封面图、单独下载的封面当成独立条目
+    - all=true 时列出下载目录里所有媒体文件（仍跳过隐藏目录）
+    """
     root = download_directory()
     items = []
     if root.exists():
         for path in root.rglob('*'):
-            if not path.is_file() or path.name.startswith('.'):
+            if not path.is_file() or path.name.startswith('.') or _hidden(path, root):
                 continue
             kind = _kind(path)
-            if not kind:
+            if kind not in ('video', 'audio') and not (all and kind == 'image'):
                 continue
             if q and q.lower() not in path.name.lower():
                 continue
+            cover = _find_cover(path.parent, path.stem)
+            if not all and kind != 'image' and not cover:
+                continue
             stat = path.stat()
-            cover = next((c for c in (path.parent / 'cover.jpg', path.parent / 'cover.webp') if c.exists()), None)
             rel = path.relative_to(root).as_posix()
+            subs = _find_subtitles(path.parent, path.stem) if kind == 'video' else []
             items.append({
                 'path': rel, 'name': path.stem, 'ext': path.suffix.lower().lstrip('.'),
                 'kind': kind, 'size': stat.st_size, 'mtime': stat.st_mtime,
                 'folder': path.parent.relative_to(root).as_posix(),
                 'cover': cover.relative_to(root).as_posix() if cover else (rel if kind == 'image' else None),
+                'subtitles': [
+                    {'path': s.relative_to(root).as_posix(), 'lang': _subtitle_lang(s, path.stem)}
+                    for s in subs
+                ],
             })
     items.sort(key=lambda item: item['mtime'], reverse=True)
     return items[:500]
+
+
+@app.get('/api/媒体库/字幕')
+def library_subtitle(path: str):
+    """把字幕统一转成 WebVTT 给浏览器 <track> 用（浏览器只认 VTT）"""
+    target = _resolve_media(path)
+    if target.suffix.lower() not in SUBTITLE_EXT:
+        raise HTTPException(400, '不是字幕文件')
+    if target.suffix.lower() == '.vtt':
+        return FileResponse(target, media_type='text/vtt; charset=utf-8')
+    text = target.read_text('utf-8', errors='replace').lstrip('\ufeff')
+    if target.suffix.lower() == '.srt':
+        body = re.sub(r'(\d{2}:\d{2}:\d{2}),(\d{3})', r'\1.\2', text.replace('\r\n', '\n'))
+        vtt = 'WEBVTT\n\n' + body
+    else:
+        result = subprocess.run(
+            ['ffmpeg', '-v', 'error', '-i', str(target), '-f', 'webvtt', '-'],
+            capture_output=True, check=False, timeout=60,
+        )
+        if result.returncode != 0:
+            raise HTTPException(422, '字幕转换失败')
+        vtt = result.stdout.decode('utf-8', errors='replace')
+    return Response(vtt, media_type='text/vtt; charset=utf-8')
 
 
 @app.get('/api/媒体库/文件')
@@ -504,6 +597,8 @@ def library_delete(path: str):
     target = _resolve_media(path)
     root = download_directory().resolve()
     folder = target.parent
+    for sub in _find_subtitles(folder, target.stem):
+        sub.unlink(missing_ok=True)
     target.unlink()
     # 目录里只剩封面/字幕时一并清理
     if folder != root and not any(_kind(p) for p in folder.iterdir()):
@@ -527,6 +622,7 @@ def system_info():
         'cookies': cookies_file().exists() and cookies_file().stat().st_size > 0,
         '并发': store.get_int('concurrency', 2),
         '按站点分类': store.get_bool('site_folders', True),
+        '字幕方式': subtitle_mode(),
     }
 
 
@@ -540,6 +636,10 @@ def update_settings(request: SettingsRequest):
         get_queue().resize(request.concurrency)
     if request.site_folders is not None:
         store.set_setting('site_folders', '1' if request.site_folders else '0')
+    if request.subtitle_mode is not None:
+        if request.subtitle_mode not in SUBTITLE_MODES:
+            raise HTTPException(400, '字幕方式无效')
+        store.set_setting('subtitle_mode', request.subtitle_mode)
     return system_info()
 
 

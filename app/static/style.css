@@ -204,3 +204,10 @@ dialog .close{position:absolute;right:12px;top:12px;z-index:2}
   .j-acts{grid-column:2/4}
 }
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+/* 媒体库：字幕角标 */
+.tile .cv span.cc{left:auto;right:8px;background:rgba(0,122,255,.85)}
+/* 设置：下拉选择 */
+.select{appearance:none;-webkit-appearance:none;background:var(--fill) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238e8e93' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E") no-repeat right 10px center;border:0;border-radius:10px;padding:6px 28px 6px 10px;font:inherit;font-size:13px;color:inherit;cursor:pointer;max-width:60%}
+.select:focus{outline:2px solid rgba(0,122,255,.5);outline-offset:1px}
+#viewer video::cue{background:rgba(0,0,0,.55);font-size:.95em}

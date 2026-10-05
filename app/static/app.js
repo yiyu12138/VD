@@ -82,6 +82,7 @@ async function loadSystem() {
   pill.querySelector('span').textContent = `${sys['代理'] ? '代理已设置' : '未设置代理'} · yt-dlp ${sys.yt_dlp}`;
   $('#conc').textContent = sys['并发'];
   $('#site-folders').checked = sys['按站点分类'];
+  if ($('#sub-mode')) $('#sub-mode').value = sys['字幕方式'] || 'both';
   updateSaveHint();
 }
 
@@ -327,12 +328,14 @@ async function loadLibrary() {
   $$('[data-count="library"]').forEach((el) => el.textContent = items.length || '');
   const grid = $('#lib-grid');
   if (!items.length) { grid.innerHTML = '<div class="card glass list-empty" style="grid-column:1/-1">还没有下载内容</div>'; return; }
+  libItems = new Map(items.map((it) => [it.path, it]));
   grid.innerHTML = items.map((it) => `
     <article class="tile glass" data-path="${esc(it.path)}" data-name="${esc(it.name)}" tabindex="0">
-      <div class="cv">${it.cover ? `<img loading="lazy" alt="" src="/api/媒体库/文件?path=${encodeURIComponent(it.cover)}">` : ''}<span>${esc(it.ext)}</span></div>
-      <div class="ti"><b>${esc(it.name)}</b><p>${fmtBytes(it.size)} · ${fmtTime(it.mtime)}</p></div>
+      <div class="cv">${it.cover ? `<img loading="lazy" alt="" src="/api/媒体库/文件?path=${encodeURIComponent(it.cover)}">` : ''}<span>${esc(it.ext)}</span>${(it.subtitles || []).length ? `<span class="cc" title="${esc(it.subtitles.map((s) => langName(s.lang)).join('、'))}">CC</span>` : ''}</div>
+      <div class="ti"><b>${esc(it.name)}</b><p>${fmtBytes(it.size)} · ${fmtTime(it.mtime)}${(it.subtitles || []).length ? ' · ' + it.subtitles.length + ' 个字幕' : ''}</p></div>
     </article>`).join('');
 }
+let libItems = new Map();
 $('#lib-search').addEventListener('input', () => { clearTimeout(libTimer); libTimer = setTimeout(loadLibrary, 250); });
 $('#lib-grid').addEventListener('click', (e) => {
   const t = e.target.closest('.tile'); if (t) openViewer(t.dataset.path, t.dataset.name);
@@ -346,7 +349,8 @@ function openViewer(path, name) {
   const ext = path.split('.').pop().toLowerCase();
   const media = ['mp3', 'm4a', 'opus', 'flac', 'wav'].includes(ext) ? `<audio src="${url}" controls autoplay></audio>`
     : ['jpg', 'jpeg', 'png', 'webp'].includes(ext) ? `<img src="${url}" alt="">`
-    : `<video src="${url}" controls autoplay playsinline></video>`;
+    : `<video src="${url}" controls autoplay playsinline crossorigin="anonymous">${((libItems.get(path) || {}).subtitles || []).map((s, i) =>
+        `<track kind="subtitles" src="/api/媒体库/字幕?path=${encodeURIComponent(s.path)}" srclang="${esc(s.lang)}" label="${esc(langName(s.lang))}"${i === 0 ? ' default' : ''}>`).join('')}</video>`;
   $('#viewer-body').innerHTML = `${media}<h3>${esc(name)}</h3><p class="muted small mono">${esc(path)}</p>
     <div class="row-btns"><a class="btn ghost" href="${url}&download=true">下载到本机</a><button class="btn ghost danger" id="lib-del">删除文件</button></div>`;
   $('#lib-del').onclick = async () => {
@@ -407,6 +411,9 @@ $$('.stepper button').forEach((b) => b.addEventListener('click', async () => {
   const v = Math.max(1, Math.min(6, (+$('#conc').textContent) + (+b.dataset.step)));
   try { sys = await api('设置', { method: 'PUT', json: { concurrency: v } }); $('#conc').textContent = sys['并发']; } catch (e) { toast(e.message, true); }
 }));
+$('#sub-mode').addEventListener('change', async (e) => {
+  try { sys = await api('设置', { method: 'PUT', json: { subtitle_mode: e.target.value } }); toast('字幕方式已保存'); } catch (err) { toast(err.message, true); }
+});
 $('#site-folders').addEventListener('change', async (e) => {
   try { sys = await api('设置', { method: 'PUT', json: { site_folders: e.target.checked } }); updateSaveHint(); } catch (err) { toast(err.message, true); }
 });

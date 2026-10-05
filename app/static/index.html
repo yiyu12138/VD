@@ -159,6 +159,12 @@
               <div class="stepper"><button data-step="-1" aria-label="减少">−</button><b id="conc">2</b><button data-step="1" aria-label="增加">+</button></div></div>
             <div class="li"><span>按站点分文件夹<small class="muted">如 Bilibili/视频标题/</small></span>
               <label class="switch"><input type="checkbox" id="site-folders"><i></i></label></div>
+            <div class="li"><span>字幕处理<small class="muted">下载时勾选了字幕才生效</small></span>
+              <select id="sub-mode" class="select" aria-label="字幕处理方式">
+                <option value="both">嵌入视频 + 保留外挂</option>
+                <option value="embed">只嵌入视频</option>
+                <option value="external">只保留外挂文件</option>
+              </select></div>
             <div class="li"><span>保存目录</span><span class="muted mono" data-bind="dir-full">—</span></div>
           </div>
         </section>

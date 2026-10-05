@@ -265,6 +265,54 @@ def download_media(
     return output
 
 
+SUBTITLE_MODES = ('both', 'embed', 'external')
+
+# 常见语言代码 → ISO 639-2（mp4/mkv 字幕轨的语言标签）
+_LANG3 = {
+    'zh': 'chi', 'zh-hans': 'chi', 'zh-hant': 'chi', 'zh-cn': 'chi', 'zh-tw': 'chi', 'zh-hk': 'chi',
+    'en': 'eng', 'ja': 'jpn', 'ko': 'kor', 'fr': 'fre', 'de': 'ger', 'es': 'spa', 'ru': 'rus',
+    'pt': 'por', 'it': 'ita', 'ar': 'ara', 'th': 'tha', 'vi': 'vie', 'id': 'ind', 'hi': 'hin',
+}
+
+
+def _lang3(code: str) -> str:
+    c = code.lower()
+    return _LANG3.get(c) or _LANG3.get(c.split('-')[0]) or 'und'
+
+
+def embed_subtitles(video: Path, subtitles: list[tuple[Path, str]]) -> bool:
+    """把字幕作为软字幕轨封装进视频（不重新编码，几秒完成）。
+
+    mp4 用 mov_text，mkv 直接放 srt；webm 只支持 webvtt。成功返回 True，失败保留原文件返回 False。
+    """
+    if not subtitles:
+        return False
+    ext = video.suffix.lower()
+    codec = {'.mp4': 'mov_text', '.m4v': 'mov_text', '.mov': 'mov_text', '.mkv': 'srt', '.webm': 'webvtt'}.get(ext)
+    if not codec:
+        return False
+    tmp = video.with_name(video.stem + '.subs-tmp' + ext)
+    cmd = ['ffmpeg', '-y', '-v', 'error', '-i', str(video)]
+    for sub, _ in subtitles:
+        cmd += ['-i', str(sub)]
+    cmd += ['-map', '0:v?', '-map', '0:a?']
+    for i in range(len(subtitles)):
+        cmd += ['-map', f'{i + 1}:0']
+    cmd += ['-c:v', 'copy', '-c:a', 'copy', '-c:s', codec]
+    for i, (_, lang) in enumerate(subtitles):
+        cmd += [f'-metadata:s:s:{i}', f'language={_lang3(lang)}', f'-metadata:s:s:{i}', f'title={lang}']
+    cmd += ['-disposition:s:0', 'default']
+    if ext in ('.mp4', '.m4v', '.mov'):
+        cmd += ['-movflags', '+faststart']
+    cmd.append(str(tmp))
+    result = subprocess.run(cmd, capture_output=True, check=False, timeout=1800)
+    if result.returncode != 0 or not tmp.exists() or tmp.stat().st_size < video.stat().st_size * 0.9:
+        tmp.unlink(missing_ok=True)
+        return False
+    tmp.replace(video)
+    return True
+
+
 def proxy_candidates() -> list[str]:
     return [
         'http://127.0.0.1:20171',
