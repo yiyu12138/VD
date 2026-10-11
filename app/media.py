@@ -207,6 +207,11 @@ def parse_media(url: str, proxy: str | None) -> dict:
     for item in info.get('formats', []):
         has_video = item.get('vcodec') not in {None, 'none'}
         has_audio = item.get('acodec') not in {None, 'none'}
+        # 推特 HLS 的独立音频轨：vcodec='none'，acodec 却是 None（没标编码），
+        # 按上面的规则会被误判成「既无视频也无音频」而丢弃，导致下载后没有声音
+        if not has_video and not has_audio and item.get('vcodec') == 'none' and item.get('acodec') is None:
+            has_audio = True
+            item = {**item, 'acodec': 'mp4a.40.2'}
         if not item.get('format_id') or not (has_video or has_audio):
             continue
         parsed = {
