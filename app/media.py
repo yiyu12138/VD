@@ -3,8 +3,11 @@ import subprocess
 import time
 from collections.abc import Callable
 from pathlib import Path
+from html import unescape
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request
+from urllib.request import urlopen as _urlopen
+import re
 
 import yt_dlp
 
@@ -122,8 +125,56 @@ def normalize_url(url: str) -> str:
     return url
 
 
-def extract_info(url: str, proxy: str | None, download: bool) -> dict:
+# ---- bad.news：推特搬运站，yt-dlp 没有专用提取器 ----
+# 通用提取器会把页面里所有 <video>（含推荐区）都当成条目，这里只锁定主帖那一个。
+_BADNEWS_HOSTS = ('bad.news',)
+_BROWSER_UA = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 '
+               '(KHTML, like Gecko) Version/17.0 Safari/605.1.15')
+
+
+def is_badnews(url: str) -> bool:
+    host = (urlsplit(url).hostname or '').lower()
+    return any(host == d or host.endswith('.' + d) for d in _BADNEWS_HOSTS)
+
+
+def resolve_badnews(url: str, proxy: str | None = None) -> dict | None:
+    """解析 bad.news/t/<id>：返回 {'url','title','thumbnail','referer'}，找不到主帖视频返回 None。"""
+    match = re.search(r'/t/(\d+)', urlsplit(url).path)
+    if not match:
+        return None
+    post_id = match.group(1)
+    request = Request(url, headers={'User-Agent': _BROWSER_UA, 'Accept-Language': 'zh-CN,zh;q=0.9'})
+    if proxy:
+        from urllib.request import ProxyHandler, build_opener
+        opener = build_opener(ProxyHandler({'http': proxy, 'https': proxy}))
+        raw = opener.open(request, timeout=20).read()
+    else:
+        raw = _urlopen(request, timeout=20).read()
+    page = raw.decode('utf-8', errors='replace')
+
+    chosen = None
+    for tag in re.findall(r'<video\b[^>]*>', page, flags=re.I):
+        attrs = dict(re.findall(r'([\w-]+)\s*=\s*"([^"]*)"', tag))
+        source = attrs.get('data-source') or attrs.get('src')
+        if source and attrs.get('data-id') == post_id:
+            chosen = (unescape(source), unescape(attrs.get('poster', '')))
+            break
+    if not chosen:
+        return None
+
+    def meta(prop: str) -> str:
+        found = re.search(rf'<meta[^>]+property="{prop}"[^>]+content="([^"]*)"', page, flags=re.I)
+        return unescape(found.group(1)).strip() if found else ''
+
+    title = meta('og:title') or f'bad.news-{post_id}'
+    title = re.sub(r'[\\/:*?"<>|\r\n]+', ' ', title).strip()[:120] or f'bad.news-{post_id}'
+    return {'url': chosen[0], 'title': title, 'thumbnail': chosen[1] or meta('og:image'), 'referer': url}
+
+
+def extract_info(url: str, proxy: str | None, download: bool, referer: str | None = None) -> dict:
     options = ydl_options()
+    if referer:  # 仅用于标记走了 bad.news 分支；不发送 Referer（twimg 会 403）
+        options['http_headers'] = {'User-Agent': _BROWSER_UA}
     if cookies := cookie_file():
         options['cookiefile'] = str(cookies)
     if proxy:
@@ -134,12 +185,23 @@ def extract_info(url: str, proxy: str | None, download: bool) -> dict:
 
 def parse_media(url: str, proxy: str | None) -> dict:
     url = normalize_url(url)
+    override: dict | None = None
+    referer: str | None = None
+    if is_badnews(url):
+        override = resolve_badnews(url, proxy)
+        if not override:
+            raise ValueError('没有在该 bad.news 页面找到主帖视频（可能是纯图片/文字帖，或页面需要登录）')
+        referer, url = override['referer'], override['url']
     try:
-        info = extract_info(url, proxy, download=False)
+        info = extract_info(url, proxy, download=False, referer=referer)
     except Exception:
         if not needs_direct_fallback(url, proxy):
             raise
-        info = extract_info(url, None, download=False)
+        info = extract_info(url, None, download=False, referer=referer)
+    if override:
+        info['title'] = override['title']
+        info['thumbnail'] = override['thumbnail'] or info.get('thumbnail')
+        info['extractor_key'] = 'BadNews'
 
     formats = []
     for item in info.get('formats', []):
@@ -259,6 +321,13 @@ def download_media(
     subtitles: list[str] | None = None,
 ) -> Path:
     url = normalize_url(url)
+    title_override: str | None = None
+    referer: str | None = None
+    if is_badnews(url):
+        resolved = resolve_badnews(url, proxy)
+        if not resolved:
+            raise ValueError('没有在该 bad.news 页面找到主帖视频')
+        referer, url, title_override = resolved['referer'], resolved['url'], resolved['title']
     target.mkdir(parents=True, exist_ok=True)
     audio_only = container in {'mp3', 'm4a'}
 
@@ -268,6 +337,11 @@ def download_media(
             'outtmpl': str(target / '%(title).200B.%(ext)s'),
             'merge_output_format': container, 'continuedl': True,
         }
+        if title_override:
+            options['outtmpl'] = str(target / (title_override.replace('%', '%%') + '.%(ext)s'))
+        if referer:
+            # 注意：不能带 Referer——video.twimg.com 对 Referer: bad.news 直接 403
+            options['http_headers'] = {'User-Agent': _BROWSER_UA}
         if cookies := cookie_file():
             options['cookiefile'] = str(cookies)
         if active_proxy:
