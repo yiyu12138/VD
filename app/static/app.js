@@ -216,12 +216,19 @@ const STATUS = {
   '暂停中': ['wt', '暂停中'], '取消中': ['wt', '取消中'], '已完成': ['ok', '完成'], '已取消': ['', '已取消'], '可继续': ['er', '需处理'],
 };
 const isActive = (j) => ['排队中', '准备中', '下载中', '合并中', '暂停中', '取消中'].includes(j.status);
+const isBusy = (j) => ['排队中', '准备中', '下载中', '合并中', '取消中'].includes(j.status);
 let jobFilter = 'all';
 
 function jobNode(j) {
   const n = $('#job-tpl').content.firstElementChild.cloneNode(true);
+  fillJobNode(n, j);
+  return n;
+}
+
+function fillJobNode(n, j) {
   const img = $('img', n);
-  if (j.thumbnail) img.src = j.thumbnail; else img.removeAttribute('src');
+  if (j.thumbnail) { if (img.getAttribute('src') !== j.thumbnail) img.src = j.thumbnail; }
+  else if (img.hasAttribute('src')) img.removeAttribute('src');
   $('.j-title', n).textContent = j.title;
   const [cls, label] = STATUS[j.status] || ['', j.status];
   const pct = j.total ? Math.min(100, Math.round(j.downloaded / j.total * 100)) : 0;
@@ -242,8 +249,9 @@ function jobNode(j) {
   $('.j-left', n).textContent = left;
   $('.j-right', n).textContent = right;
   const track = $('.track', n);
-  if (['下载中', '合并中'].includes(j.status) && j.total) $('i', track).style.width = (j.status === '合并中' ? 100 : pct) + '%';
-  else track.remove();
+  const showTrack = ['下载中', '合并中'].includes(j.status) && j.total;
+  track.style.display = showTrack ? '' : 'none';
+  if (showTrack) $('i', track).style.width = (j.status === '合并中' ? 100 : pct) + '%';
   $('.j-err', n).textContent = j.status === '可继续' && j.error !== '已暂停' ? j.error || '' : '';
   const acts = $('.j-acts', n);
   const btn = (act, icon, title, cls = '') => `<button class="icon-btn ${cls}" data-act="${act}" data-id="${j.id}" title="${title}" aria-label="${title}"><svg><use href="#i-${icon}"/></svg></button>`;
@@ -253,23 +261,44 @@ function jobNode(j) {
   if (isActive(j) && j.status !== '取消中') html += btn('取消', 'x', '取消');
   if (j.status === '已完成' && j.saved_path) html += btn('打开', 'play', '预览');
   if (!isActive(j)) html += btn('删除', 'trash', '删除记录', 'danger');
-  acts.innerHTML = html;
-  return n;
+  if (acts.dataset.sig !== html) { acts.innerHTML = html; acts.dataset.sig = html; }
+}
+
+// 按 id 复用节点：之前每秒 replaceChildren 重建整表，缩略图会闪、滚动位置会丢
+const jobNodes = { recent: new Map(), all: new Map() };
+
+function renderList(container, cache, list, emptyText) {
+  if (!list.length) {
+    cache.clear();
+    container.innerHTML = `<div class="list-empty">${emptyText}</div>`;
+    return;
+  }
+  const empty = $('.list-empty', container);
+  if (empty) empty.remove();
+  const seen = new Set();
+  list.forEach((j, i) => {
+    let n = cache.get(j.id);
+    if (!n) { n = jobNode(j); cache.set(j.id, n); }
+    else fillJobNode(n, j);
+    seen.add(j.id);
+    const current = container.children[i];
+    if (current !== n) container.insertBefore(n, current || null);
+  });
+  for (const [id, n] of cache) {
+    if (!seen.has(id)) { n.remove(); cache.delete(id); }
+  }
+  while (container.children.length > list.length) container.lastElementChild.remove();
 }
 function renderJobs() {
-  const recent = jobs.slice(0, 6);
-  const r = $('#recent-jobs');
-  r.replaceChildren(...recent.map(jobNode));
-  if (!recent.length) r.innerHTML = '<div class="list-empty">还没有任务</div>';
+  const active = jobs.filter(isActive);
+  // 正在下载的排前面，剩下的按时间倒序
+  const recent = [...active, ...jobs.filter((j) => !isActive(j))].slice(0, 6);
+  renderList($('#recent-jobs'), jobNodes.recent, recent, '还没有任务');
   const f = {
     all: () => true, active: isActive, done: (j) => j.status === '已完成', failed: (j) => j.status === '可继续',
   }[jobFilter];
-  const list = jobs.filter(f);
-  const a = $('#all-jobs');
-  a.replaceChildren(...list.map(jobNode));
-  if (!list.length) a.innerHTML = '<div class="list-empty">这里空空如也</div>';
-  const active = jobs.filter(isActive).length;
-  $$('[data-count="active"]').forEach((el) => el.textContent = active || '');
+  renderList($('#all-jobs'), jobNodes.all, jobs.filter(f), '这里空空如也');
+  $$('[data-count="active"]').forEach((el) => el.textContent = active.length || '');
 }
 async function loadJobs() {
   try { jobs = await api('下载/任务'); renderJobs(); } catch { /* 静默 */ }
@@ -305,7 +334,7 @@ let pollTimer;
 function schedule() {
   clearTimeout(pollTimer);
   if (document.hidden) return;
-  pollTimer = setTimeout(tick, jobs.some(isActive) ? 1000 : 8000);
+  pollTimer = setTimeout(tick, jobs.some(isBusy) ? 1000 : 8000);
 }
 let lastActive = 0;
 async function tick() {
@@ -319,24 +348,35 @@ function pollSoon() { clearTimeout(pollTimer); pollTimer = setTimeout(tick, 200)
 document.addEventListener('visibilitychange', () => document.hidden ? clearTimeout(pollTimer) : pollSoon());
 
 /* ---------------- 媒体库 ---------------- */
+let libAll = [];
+let libItems = new Map();
 let libTimer;
+
 async function loadLibrary() {
-  let items;
-  try { items = await api('媒体库?q=' + encodeURIComponent($('#lib-search').value.trim())); } catch (e) { return toast(e.message, true); }
+  try { libAll = await api('媒体库'); } catch (e) { return toast(e.message, true); }
+  libItems = new Map(libAll.map((it) => [it.path, it]));
+  renderLibrary();
+}
+
+// 搜索在本地过滤：之前每敲一个字都让服务端把整个下载目录重扫一遍
+function renderLibrary() {
+  const q = $('#lib-search').value.trim().toLowerCase();
+  const items = q ? libAll.filter((it) => it.name.toLowerCase().includes(q)) : libAll;
   const total = items.reduce((a, b) => a + b.size, 0);
   bind('lib-summary', `${items.length} 个文件 · ${fmtBytes(total) || '0 B'}`);
-  $$('[data-count="library"]').forEach((el) => el.textContent = items.length || '');
+  $$('[data-count="library"]').forEach((el) => el.textContent = libAll.length || '');
   const grid = $('#lib-grid');
-  if (!items.length) { grid.innerHTML = '<div class="card glass list-empty" style="grid-column:1/-1">还没有下载内容</div>'; return; }
-  libItems = new Map(items.map((it) => [it.path, it]));
+  if (!items.length) {
+    grid.innerHTML = `<div class="card glass list-empty" style="grid-column:1/-1">${q ? '没有匹配的文件' : '还没有下载内容'}</div>`;
+    return;
+  }
   grid.innerHTML = items.map((it) => `
     <article class="tile glass" data-path="${esc(it.path)}" data-name="${esc(it.name)}" tabindex="0">
       <div class="cv">${it.cover ? `<img loading="lazy" alt="" src="/api/媒体库/文件?path=${encodeURIComponent(it.cover)}">` : ''}<span>${esc(it.ext)}</span>${(it.subtitles || []).length ? `<span class="cc" title="${esc(it.subtitles.map((s) => langName(s.lang)).join('、'))}">CC</span>` : ''}</div>
       <div class="ti"><b>${esc(it.name)}</b><p>${fmtBytes(it.size)} · ${fmtTime(it.mtime)}${(it.subtitles || []).length ? ' · ' + it.subtitles.length + ' 个字幕' : ''}</p></div>
     </article>`).join('');
 }
-let libItems = new Map();
-$('#lib-search').addEventListener('input', () => { clearTimeout(libTimer); libTimer = setTimeout(loadLibrary, 250); });
+$('#lib-search').addEventListener('input', () => { clearTimeout(libTimer); libTimer = setTimeout(renderLibrary, 120); });
 $('#lib-grid').addEventListener('click', (e) => {
   const t = e.target.closest('.tile'); if (t) openViewer(t.dataset.path, t.dataset.name);
 });
@@ -435,7 +475,7 @@ bind('today', new Date().toLocaleDateString('zh-CN', { month: 'long', day: 'nume
 route();
 loadSystem();
 tick();
-api('媒体库').then((x) => $$('[data-count="library"]').forEach((el) => el.textContent = x.length || '')).catch(() => {});
+api('媒体库').then((x) => { libAll = x; libItems = new Map(x.map((it) => [it.path, it])); $$('[data-count="library"]').forEach((el) => el.textContent = x.length || ''); }).catch(() => {});
 const shared = new URLSearchParams(location.search).get('url') || new URLSearchParams(location.search).get('text');
 if (shared) {
   const m = shared.match(/https?:\/\/\S+/);

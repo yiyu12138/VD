@@ -54,7 +54,7 @@ def download_directory() -> Path:
 def jobs_directory() -> Path:
     # 临时目录必须和成品在同一个文件系统：否则 shutil.move 会退化成「整份复制」，
     # 既要双倍 I/O，又要求系统分区能装下所有正在下载的文件。
-    # 以 . 开头，媒体库的 _hidden() 会自动跳过。
+    # 以 . 开头，媒体库的 _walk_media() 会直接剪枝跳过。
     return download_directory() / '.vd-tmp'
 
 
@@ -308,6 +308,7 @@ def run_download_job(job_id: str) -> None:
             'status': '已完成', 'downloaded': size, 'total': size, 'speed': 0,
             'temporary_dir': None, 'saved_path': str(final), 'error': None,
         })
+        invalidate_library()
         store.add_history({
             'url': request.url, 'title': parsed['title'],
             'thumbnail': parsed.get('thumbnail', ''),
@@ -490,39 +491,20 @@ SUBTITLE_EXT = {'.srt', '.vtt', '.ass', '.ssa'}
 COVER_NAMES = ('cover.jpg', 'cover.jpeg', 'cover.png', 'cover.webp')
 
 
-def _hidden(path: Path, root: Path) -> bool:
-    """下载目录里以 . 开头的目录（如飞牛影视/相册生成的 .seekMeta 缩略图缓存）一律不属于下载内容"""
-    try:
-        parts = path.relative_to(root).parts
-    except ValueError:
-        return True
-    return any(p.startswith('.') or p.startswith('@') for p in parts)
+def _subtitle_matches(sub_stem: str, stem: str) -> bool:
+    """字幕名必须落在「视频名.」这个边界上：视频2.zh.srt 不属于 视频.mp4"""
+    return sub_stem == stem or sub_stem.startswith(stem + '.')
 
 
-def _find_cover(folder: Path, stem: str) -> Path | None:
-    for name in COVER_NAMES:
-        p = folder / name
-        if p.exists():
-            return p
-    for ext in ('.jpg', '.jpeg', '.png', '.webp'):
-        p = folder / f'{stem}{ext}'
-        if p.exists():
-            return p
-    return None
+def _find_subtitles(folder: Path, stem: str) -> list[Path]:
+    return sorted(p for p in folder.iterdir()
+                  if p.is_file() and p.suffix.lower() in SUBTITLE_EXT
+                  and _subtitle_matches(p.stem, stem))
 
 
 def _subtitle_lang(sub: Path, stem: str) -> str:
     rest = sub.stem[len(stem):].lstrip('.') if sub.stem.startswith(stem) else sub.stem.rsplit('.', 1)[-1]
     return rest or 'und'
-
-
-def _find_subtitles(folder: Path, stem: str) -> list[Path]:
-    # 必须要求 "视频名." 这个边界：只写 startswith(stem) 会让「视频2.zh.srt」
-    # 被当成「视频.mp4」的字幕，删除视频时还会把别人的字幕一起删掉。
-    prefix = stem + '.'
-    return sorted(p for p in folder.iterdir()
-                  if p.is_file() and p.suffix.lower() in SUBTITLE_EXT
-                  and (p.stem == stem or p.stem.startswith(prefix)))
 
 
 def _kind(path: Path) -> str | None:
@@ -536,42 +518,100 @@ def _kind(path: Path) -> str | None:
     return None
 
 
-@app.get('/api/媒体库')
-def library(q: str = '', all: bool = False):
-    """媒体库：默认只列出带封面的视频 / 音频（即本应用下载的成品）。
+def _cover_for(by_name: dict[str, Path], path: Path) -> Path | None:
+    for name in COVER_NAMES:
+        found = by_name.get(name)
+        if found:
+            return found
+    for ext in ('.jpg', '.jpeg', '.png', '.webp'):
+        found = by_name.get(f'{path.stem}{ext}')
+        if found:
+            return found
+    return None
 
-    - 跳过隐藏目录（.seekMeta 等其它程序生成的缩略图 / 预览缓存）
-    - 不把封面图、单独下载的封面当成独立条目
-    - all=true 时列出下载目录里所有媒体文件（仍跳过隐藏目录）
+
+def _walk_media(root: Path) -> dict[Path, list[Path]]:
+    """按目录分组遍历下载目录；隐藏目录（.seekMeta、.vd-tmp）直接剪枝，不进去。"""
+    folders: dict[Path, list[Path]] = {}
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [name for name in dirnames if not name.startswith(('.', '@'))]
+        files = [Path(dirpath) / name for name in filenames if not name.startswith('.')]
+        if files:
+            folders[Path(dirpath)] = files
+    return folders
+
+
+def _scan_library(root: Path) -> list[dict]:
+    """扫一遍下载目录，封面/字幕在内存里建索引。
+
+    之前是「每个文件都 iterdir 一次找字幕 + 最多 7 次 exists() 找封面」，
+    320 个文件实测 1.0 秒（320 次 iterdir、6806 次 stat）。
+    现在每个目录只遍历一次，路径用字符串拼（pathlib 的 relative_to 在 NAS 上很贵）。
     """
-    root = download_directory()
     items = []
-    if root.exists():
-        for path in root.rglob('*'):
-            if not path.is_file() or path.name.startswith('.') or _hidden(path, root):
-                continue
+    for folder, files in _walk_media(root).items():
+        folder_rel = folder.relative_to(root).as_posix()
+        prefix = '' if folder_rel == '.' else folder_rel + '/'
+        by_name = {p.name: p for p in files}
+        subtitles = [p for p in files if p.suffix.lower() in SUBTITLE_EXT]
+        for path in files:
             kind = _kind(path)
-            if kind not in ('video', 'audio') and not (all and kind == 'image'):
+            if kind is None:
                 continue
-            if q and q.lower() not in path.name.lower():
+            try:
+                stat = path.stat()
+            except OSError:
                 continue
-            cover = _find_cover(path.parent, path.stem)
-            if not all and kind != 'image' and not cover:
-                continue
-            stat = path.stat()
-            rel = path.relative_to(root).as_posix()
-            subs = _find_subtitles(path.parent, path.stem) if kind == 'video' else []
+            cover = _cover_for(by_name, path)
+            subs = [s for s in subtitles if _subtitle_matches(s.stem, path.stem)] if kind == 'video' else []
             items.append({
-                'path': rel, 'name': path.stem, 'ext': path.suffix.lower().lstrip('.'),
+                'path': prefix + path.name, 'name': path.stem, 'ext': path.suffix.lower().lstrip('.'),
                 'kind': kind, 'size': stat.st_size, 'mtime': stat.st_mtime,
-                'folder': path.parent.relative_to(root).as_posix(),
-                'cover': cover.relative_to(root).as_posix() if cover else (rel if kind == 'image' else None),
+                'folder': folder_rel,
+                'cover': prefix + cover.name if cover else (prefix + path.name if kind == 'image' else None),
                 'subtitles': [
-                    {'path': s.relative_to(root).as_posix(), 'lang': _subtitle_lang(s, path.stem)}
+                    {'path': prefix + s.name, 'lang': _subtitle_lang(s, path.stem)}
                     for s in subs
                 ],
             })
     items.sort(key=lambda item: item['mtime'], reverse=True)
+    return items
+
+
+_library_cache: tuple[float, list[dict]] | None = None
+_LIBRARY_TTL = 5.0
+
+
+def invalidate_library() -> None:
+    global _library_cache
+    _library_cache = None
+
+
+def _library_items() -> list[dict]:
+    global _library_cache
+    now = time.monotonic()
+    if _library_cache and now - _library_cache[0] < _LIBRARY_TTL:
+        return _library_cache[1]
+    items = _scan_library(download_directory())
+    _library_cache = (now, items)
+    return items
+
+
+@app.get('/api/媒体库')
+def library(q: str = '', all: bool = False):
+    """媒体库：默认只列出带封面的视频 / 音频（即本应用下载的成品）。
+
+    - 跳过隐藏目录（.seekMeta、.vd-tmp 等）
+    - 不把封面图、单独下载的封面当成独立条目
+    - all=true 时列出下载目录里所有媒体文件（仍跳过隐藏目录）
+    - 结果缓存 5 秒；下载完成、删除文件时立即失效
+    """
+    items = _library_items()
+    if not all:
+        items = [item for item in items if item['kind'] != 'image' and item['cover']]
+    if q:
+        needle = q.lower()
+        items = [item for item in items if needle in item['name'].lower()]
     return items[:500]
 
 
@@ -622,6 +662,7 @@ def library_delete(path: str):
                      if p.is_dir() or p.suffix.lower() not in SUBTITLE_EXT | IMAGE_EXT]
         if not leftovers:
             shutil.rmtree(folder, ignore_errors=True)
+    invalidate_library()
     return {'ok': True}
 
 
