@@ -13,4 +13,4 @@ desktop_applaunchname = video-downloader.Application
 install_dep_apps      = python312
 ctl_stop              = true
 checkport             = false
-changelog             = v2.1.1：修复部分 YouTube 视频下载后无法播放（MP4 改为优先 H.264，不再选中 VP9 封装的流）
+changelog             = v2.2.1：修复临时目录跨盘复制、HttpOnly Cookies 被清空、字幕误挂与误删、同名任务并发报错；媒体库提速 5 倍并改用缩略图
