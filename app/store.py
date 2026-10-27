@@ -29,6 +29,9 @@ class Store:
                 'saved_path TEXT, error TEXT, cancel_requested INTEGER NOT NULL DEFAULT 0, '
                 'created_at TEXT NOT NULL, updated_at TEXT NOT NULL)'
             )
+            connection.execute(
+                'CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, created_at DESC)'
+            )
             columns = {row[1] for row in connection.execute('PRAGMA table_info(jobs)')}
             if 'site' not in columns:
                 connection.execute("ALTER TABLE jobs ADD COLUMN site TEXT NOT NULL DEFAULT ''")
@@ -38,7 +41,13 @@ class Store:
                 )
 
     def _connect(self) -> sqlite3.Connection:
-        return sqlite3.connect(self.path, timeout=5, check_same_thread=False)
+        connection = sqlite3.connect(self.path, timeout=5, check_same_thread=False)
+        # 进度回调每 0.5 秒写一次库：默认的 delete + FULL 每次提交两次 fsync，
+        # WAL + NORMAL 把写入成本压到 1/20，读写也不再互相阻塞。
+        connection.execute('PRAGMA journal_mode=WAL')
+        connection.execute('PRAGMA synchronous=NORMAL')
+        connection.execute('PRAGMA busy_timeout=5000')
+        return connection
 
     def get_proxy(self) -> str | None:
         with self._connect() as connection:

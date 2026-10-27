@@ -12,11 +12,13 @@ from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel, ConfigDict
 from starlette.responses import FileResponse, HTMLResponse, Response
 
 from app import __version__
 from app.media import (
+    cookie_fields,
     download_cover,
     download_media,
     embed_subtitles,
@@ -50,7 +52,10 @@ def download_directory() -> Path:
 
 
 def jobs_directory() -> Path:
-    return data_dir() / 'jobs'
+    # 临时目录必须和成品在同一个文件系统：否则 shutil.move 会退化成「整份复制」，
+    # 既要双倍 I/O，又要求系统分区能装下所有正在下载的文件。
+    # 以 . 开头，媒体库的 _hidden() 会自动跳过。
+    return download_directory() / '.vd-tmp'
 
 
 def cookies_file() -> Path:
@@ -70,6 +75,8 @@ async def lifespan(application: FastAPI):
 
 
 app = FastAPI(docs_url=None, redoc_url=None, lifespan=lifespan)
+# 静态资源 + 媒体库 JSON 都吃得到：52KB -> 16KB
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 app.mount('/static', StaticFiles(directory=ROOT / 'static'), name='static')
 
 
@@ -191,13 +198,16 @@ def destination_directory(title: str, site: str | None) -> Path:
     if site and get_store().get_bool('site_folders', True):
         root = root / safe_name(site)
     base = root / safe_name(title)
-    candidate = base
-    suffix = 2
-    while candidate.exists():
-        candidate = base.with_name(f'{base.name} ({suffix})')
-        suffix += 1
-    candidate.mkdir(parents=True, exist_ok=False)
-    return candidate
+    # exists() 和 mkdir() 之间没有原子性：两个同名任务同时收尾会撞 FileExistsError，
+    # 明明下载成功了却报失败。这里直接靠 mkdir(exist_ok=False) 抢，抢不到就换下一个名字。
+    for suffix in range(1, 1000):
+        candidate = base if suffix == 1 else base.with_name(f'{base.name} ({suffix})')
+        try:
+            candidate.mkdir(parents=True, exist_ok=False)
+            return candidate
+        except FileExistsError:
+            continue
+    raise RuntimeError('同名目录过多，请清理后重试')
 
 
 def move_subtitles(source: Path, target: Path, title: str) -> list[tuple[Path, str]]:
@@ -507,8 +517,12 @@ def _subtitle_lang(sub: Path, stem: str) -> str:
 
 
 def _find_subtitles(folder: Path, stem: str) -> list[Path]:
+    # 必须要求 "视频名." 这个边界：只写 startswith(stem) 会让「视频2.zh.srt」
+    # 被当成「视频.mp4」的字幕，删除视频时还会把别人的字幕一起删掉。
+    prefix = stem + '.'
     return sorted(p for p in folder.iterdir()
-                  if p.is_file() and p.suffix.lower() in SUBTITLE_EXT and p.stem.startswith(stem))
+                  if p.is_file() and p.suffix.lower() in SUBTITLE_EXT
+                  and (p.stem == stem or p.stem.startswith(prefix)))
 
 
 def _kind(path: Path) -> str | None:
@@ -595,14 +609,19 @@ def library_file(path: str, download: bool = False):
 @app.delete('/api/媒体库/文件')
 def library_delete(path: str):
     target = _resolve_media(path)
+    if target.is_dir():
+        raise HTTPException(400, '不能删除目录')
     root = download_directory().resolve()
     folder = target.parent
     for sub in _find_subtitles(folder, target.stem):
         sub.unlink(missing_ok=True)
     target.unlink()
-    # 目录里只剩封面/字幕时一并清理
-    if folder != root and not any(_kind(p) for p in folder.iterdir()):
-        shutil.rmtree(folder, ignore_errors=True)
+    # 只有「剩下的全是封面/字幕」才清理目录：笔记、nfo、别的程序放的文件一律保留
+    if folder != root:
+        leftovers = [p for p in folder.iterdir()
+                     if p.is_dir() or p.suffix.lower() not in SUBTITLE_EXT | IMAGE_EXT]
+        if not leftovers:
+            shutil.rmtree(folder, ignore_errors=True)
     return {'ok': True}
 
 
@@ -713,10 +732,11 @@ def test_proxy():
 def cookie_sites(path: Path) -> list[str]:
     sites = set()
     for line in path.read_text('utf-8', errors='replace').splitlines():
-        parts = line.split('\t')
-        if len(parts) >= 7 and not line.startswith('#'):
-            domain = parts[0].lstrip('.').removeprefix('www.')
-            sites.add('.'.join(domain.split('.')[-2:]))
+        parsed = cookie_fields(line)
+        if not parsed:
+            continue
+        domain = parsed[1][0].lstrip('.').removeprefix('www.')
+        sites.add('.'.join(domain.split('.')[-2:]))
     return sorted(sites)
 
 

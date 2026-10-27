@@ -80,33 +80,56 @@ def validate_url(url: str) -> bool:
     return parts.scheme in {'http', 'https'} and bool(parts.hostname)
 
 
+HTTPONLY_PREFIX = '#HttpOnly_'
+
+
+def cookie_fields(line: str) -> tuple[bool, list[str]] | None:
+    """解析一行 Netscape cookies.txt，返回 (是否 HttpOnly, 字段列表)。
+
+    注释行、空行、字段不足的行返回 None。注意 HttpOnly Cookie 在 Netscape
+    格式里写成 "#HttpOnly_<domain>\\t..."，它不是注释，不能直接跳过。
+    """
+    stripped = line.strip()
+    if not stripped:
+        return None
+    httponly = stripped.startswith(HTTPONLY_PREFIX)
+    if httponly:
+        stripped = stripped[len(HTTPONLY_PREFIX):]
+    elif stripped.startswith('#'):
+        return None
+    parts = stripped.split('\t')
+    if len(parts) < 7:
+        return None
+    return httponly, parts
+
+
 def validate_cookie_file(content: bytes) -> None:
     text = content.decode('utf-8', errors='replace')
     lines = [line for line in text.splitlines() if line.strip() and not line.startswith('#')]
+    lines += [line for line in text.splitlines() if line.startswith(HTTPONLY_PREFIX)]
     if not lines:
         raise ValueError('文件不包含有效的 Cookie 条目')
     for line in lines[:10]:
-        if len(line.split('\t')) < 7:
+        if cookie_fields(line) is None:
             raise ValueError('文件格式不符合 Netscape cookies.txt 标准')
 
 
 def merge_cookie_files(existing: bytes, incoming: bytes) -> bytes:
-    def parse_entries(raw: bytes) -> dict[tuple, str]:
-        entries: dict[tuple, str] = {}
+    def parse_entries(raw: bytes) -> dict[tuple, tuple[bool, str]]:
+        entries: dict[tuple, tuple[bool, str]] = {}
         for line in raw.decode('utf-8', errors='replace').splitlines():
-            stripped = line.strip()
-            if not stripped or stripped.startswith('#'):
+            parsed = cookie_fields(line)
+            if not parsed:
                 continue
-            parts = stripped.split('\t')
-            if len(parts) >= 7:
-                key = (parts[0], parts[2], parts[5])
-                entries[key] = line
+            httponly, parts = parsed
+            entries[(parts[0], parts[2], parts[5])] = (httponly, '\t'.join(parts))
         return entries
 
     merged = parse_entries(existing)
     merged.update(parse_entries(incoming))
     header = '# Netscape HTTP Cookie File\n'
-    return (header + '\n'.join(merged.values()) + '\n').encode('utf-8')
+    body = '\n'.join((HTTPONLY_PREFIX if httponly else '') + line for httponly, line in merged.values())
+    return (header + body + '\n').encode('utf-8')
 
 
 def needs_direct_fallback(url: str, proxy: str | None) -> bool:
