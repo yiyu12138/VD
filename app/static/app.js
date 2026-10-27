@@ -372,7 +372,7 @@ function renderLibrary() {
   }
   grid.innerHTML = items.map((it) => `
     <article class="tile glass" data-path="${esc(it.path)}" data-name="${esc(it.name)}" tabindex="0">
-      <div class="cv">${it.cover ? `<img loading="lazy" alt="" src="/api/媒体库/文件?path=${encodeURIComponent(it.cover)}">` : ''}<span>${esc(it.ext)}</span>${(it.subtitles || []).length ? `<span class="cc" title="${esc(it.subtitles.map((s) => langName(s.lang)).join('、'))}">CC</span>` : ''}</div>
+      <div class="cv">${it.cover ? `<img loading="lazy" alt="" src="/api/媒体库/文件?path=${encodeURIComponent(it.cover)}&w=320">` : ''}<span>${esc(it.ext)}</span>${(it.subtitles || []).length ? `<span class="cc" title="${esc(it.subtitles.map((s) => langName(s.lang)).join('、'))}">CC</span>` : ''}</div>
       <div class="ti"><b>${esc(it.name)}</b><p>${fmtBytes(it.size)} · ${fmtTime(it.mtime)}${(it.subtitles || []).length ? ' · ' + it.subtitles.length + ' 个字幕' : ''}</p></div>
     </article>`).join('');
 }

@@ -1,3 +1,4 @@
+import hashlib
 import os
 import re
 import shutil
@@ -638,11 +639,54 @@ def library_subtitle(path: str):
     return Response(vtt, media_type='text/vtt; charset=utf-8')
 
 
+THUMB_WIDTHS = (160, 320, 640, 1280)
+
+
+def _thumb_path(source: Path, width: int) -> Path:
+    """缩略图放在封面同目录的 .thumbs/ 下，文件名带 mtime+size 指纹。
+
+    指纹变了就是新文件，旧的自然失效；目录被删时缩略图跟着一起没，不用额外清理。
+    """
+    stat = source.stat()
+    stamp = f'{source.name}|{stat.st_mtime_ns}|{stat.st_size}|{width}'
+    digest = hashlib.sha1(stamp.encode()).hexdigest()[:16]
+    return source.parent / '.thumbs' / f'{digest}.jpg'
+
+
+def _make_thumb(source: Path, width: int) -> Path | None:
+    """用 ffmpeg 生成缩略图；失败返回 None，调用方回落到原图。"""
+    try:
+        target = _thumb_path(source, width)
+    except OSError:
+        return None
+    if target.exists():
+        return target
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(target.stem + '.tmp.jpg')
+    result = subprocess.run(
+        ['ffmpeg', '-y', '-loglevel', 'error', '-i', str(source),
+         '-frames:v', '1', '-vf', f"scale='min({width},iw)':-2", '-q:v', '4', str(tmp)],
+        capture_output=True, check=False, timeout=30,
+    )
+    if result.returncode != 0 or not tmp.exists() or tmp.stat().st_size == 0:
+        tmp.unlink(missing_ok=True)
+        return None
+    tmp.replace(target)   # 原子替换，两个请求同时生成也不会读到半个文件
+    return target
+
+
 @app.get('/api/媒体库/文件')
-def library_file(path: str, download: bool = False):
+def library_file(path: str, download: bool = False, w: int = 0):
     target = _resolve_media(path)
     if not target.is_file():
         raise HTTPException(400, '不是文件')
+    # 媒体库卡片只要 320px 的缩略图：原图一张 200~400KB，320 张就是几十 MB
+    if w and not download and target.suffix.lower() in IMAGE_EXT:
+        # 宽度吸附到固定档位，避免有人用 w=1..1280 刷出一堆缓存文件
+        thumb = _make_thumb(target, min(THUMB_WIDTHS, key=lambda x: abs(x - w)))
+        if thumb:
+            return FileResponse(thumb, media_type='image/jpeg',
+                                headers={'Cache-Control': 'public, max-age=86400'})
     return FileResponse(target, filename=target.name if download else None)
 
 
@@ -659,7 +703,8 @@ def library_delete(path: str):
     # 只有「剩下的全是封面/字幕」才清理目录：笔记、nfo、别的程序放的文件一律保留
     if folder != root:
         leftovers = [p for p in folder.iterdir()
-                     if p.is_dir() or p.suffix.lower() not in SUBTITLE_EXT | IMAGE_EXT]
+                     if not p.name.startswith('.')
+                     and (p.is_dir() or p.suffix.lower() not in SUBTITLE_EXT | IMAGE_EXT)]
         if not leftovers:
             shutil.rmtree(folder, ignore_errors=True)
     invalidate_library()
